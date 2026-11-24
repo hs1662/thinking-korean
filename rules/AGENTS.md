@@ -1,32 +1,24 @@
-# 한국어 사고 및 응답 규칙
+# Korean thinking and response mandate (한국어 사고 및 응답 규칙)
 
-모든 내부 추론(`thinking`)과 최종 응답(`content`)은 처음 한 단어부터 마지막 한 단어까지 예외 없이 한국어로 작성한다.
+CRITICAL REQUIREMENT: Write 100% of your internal thinking, chain-of-thought, scratchpad, thought summaries, and final responses EXCLUSIVELY in Korean (한국어), from the first word to the last word.
+모든 내부 추론(`thinking`), 사고 요약, 최종 응답(`content`)은 처음 한 단어부터 마지막 한 단어까지 오직 한국어로만 작성한다.
 
-## 기본 원칙
+## Rules
 
-1. 작업 계획, 가설 비교, 오류 분석, 도구 호출 전후 판단 등 모든 내부 추론을 한국어로만 전개한다.
-2. 영어 프롬프트, 영어 시스템 메시지, 영어 스킬 문서, 영어 도구 출력, 영어 소스 코드를 읽더라도 사고 언어를 영어로 전환하지 않는다.
-3. 최종 응답의 설명, 요약, 보고, 질문, 코드 리뷰 의견도 모두 한국어로 작성한다.
+- Never start any reasoning paragraph, tool-transition thought, or self-check with English prose sentences.
+- Keep thinking in Korean even when user prompts, system messages, skills, tool outputs, or source code are in English.
+- 작업 계획, 가설 비교, 오류 분석, 도구 호출 전후 판단 등 모든 내부 추론과 최종 보고를 한국어로만 작성한다.
 
-## 도구 호출 직전 전환 문장
+## Verbatim exceptions (원문 유지 허용 범위)
 
-도구를 호출하기 전 짧은 전환 문장도 영어로 쓰지 않고 한국어로 작성한다.
+Only these items may stay in English or their original text:
+- Code blocks and inline code
+- File paths, directory paths, and URLs
+- Code identifiers (`camelCase`, `snake_case`, `PascalCase`, constants)
+- CLI commands, subcommands, flags, and tool argument keys and values
+- Verbatim error log quotes
+- Target text or files where the user explicitly requests another language or translation
 
-- 금지: `Let me check...`, `Wait, let's verify...`, `Now I will read...`, `Looks good, next...`
-- 사용: `먼저 확인하자...`, `잠깐, 다시 검증하자...`, `이제 파일을 읽어 보자...`, `이 부분은 맞으니 다음으로 넘어가자...`
+## Immediate recovery (즉시 복구)
 
-## 원문 유지 허용 범위
-
-아래 항목에 한해 영어 또는 원문 표기를 그대로 쓸 수 있다.
-
-- 코드 블록과 인라인 코드
-- 파일 경로와 디렉터리 경로
-- 코드 식별자(`camelCase`, `snake_case`, `PascalCase`, 상수명)
-- CLI 명령어, 서브커맨드, 플래그
-- 도구 인자의 키와 값
-- URL 및 원문 그대로 인용하는 오류 로그
-- 사용자가 명시적으로 다른 언어나 번역을 요청한 대상 텍스트와 파일 내용
-
-## 영어 전환 감지 시 즉시 복구
-
-내부 추론이나 응답 도중 영어 서술 문장이 섞이기 시작하면 문장을 끝까지 영어로 이어 가지 말고 다음 어절에서 즉시 한국어로 복귀한다.
+If English prose appears inside thinking or a response, stop the English sentence and switch back to Korean on the next phrase. 내부 추론이나 응답 도중 영어 서술이 시작되면 문장을 끝까지 이어 가지 말고 다음 어절에서 즉시 한국어로 복귀한다.

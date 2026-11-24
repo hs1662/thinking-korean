@@ -3,11 +3,6 @@ import { evaluatePlannerResponse } from "./analyzer.mjs";
 export const DRIFT_MARKER = "[thinking-korean:drift]";
 export const DEFAULT_COOLDOWN_INVOCATIONS = 2;
 
-const FIELD_LABELS = {
-  thinking: "내부 추론(thinking)",
-  content: "최종 응답(content)",
-};
-
 function isDriftMarkerStep(step) {
   return step.type === "SYSTEM_MESSAGE" && step.content.includes(DRIFT_MARKER);
 }
@@ -53,9 +48,8 @@ export function parseTranscriptJsonl(rawText) {
 }
 
 export function buildCorrectionMessage(driftedFields) {
-  const labels = driftedFields.map((field) => FIELD_LABELS[field] ?? field);
-  const target = labels.length > 0 ? labels.join(" 및 ") : "응답";
-  return `${DRIFT_MARKER} 직전 단계의 ${target}에서 영어 서술이 감지되었다. 다음 단계부터는 처음 한 단어부터 마지막 한 단어까지 내부 추론(thinking)과 최종 응답(content)을 모두 한국어로 작성하라. 코드, 파일 경로, 식별자, 명령어, 원문 오류 로그만 원문을 유지한다.`;
+  const target = driftedFields.length > 0 ? driftedFields.join(" and ") : "response";
+  return `${DRIFT_MARKER} English drift detected in ${target}. Write 100% of your next internal thinking, chain-of-thought, thought summary, and response EXCLUSIVELY in Korean (한국어). 다음 단계부터는 첫 단어부터 마지막 단어까지 모든 내부 추론(thinking), 사고 요약, 최종 응답(content)을 오직 한국어로만 작성하라. 코드, 파일 경로, 식별자, 명령어, 원문 오류 로그만 원문을 유지한다.`;
 }
 
 export function decideHookAction(steps, options = {}) {

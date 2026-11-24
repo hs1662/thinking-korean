@@ -295,6 +295,33 @@ describe("transcript reducer", () => {
     assert.ok(message.includes("thinking"));
     assert.ok(message.includes("content"));
   });
+
+  it("emits bilingual and Korean directives while naming only the drifted fields", () => {
+    const thinkingOnly = buildCorrectionMessage(["thinking"]);
+    assert.ok(thinkingOnly.startsWith(`${DRIFT_MARKER} English drift detected in thinking.`));
+    assert.equal(thinkingOnly.includes("English drift detected in content"), false);
+    assert.equal(thinkingOnly.includes("thinking and content"), false);
+    assert.ok(
+      thinkingOnly.includes(
+        "100% of your next internal thinking, chain-of-thought, thought summary, and response EXCLUSIVELY in Korean (한국어)",
+      ),
+    );
+    assert.ok(
+      thinkingOnly.includes(
+        "다음 단계부터는 첫 단어부터 마지막 단어까지 모든 내부 추론(thinking), 사고 요약, 최종 응답(content)을 오직 한국어로만 작성하라.",
+      ),
+    );
+
+    const contentOnly = buildCorrectionMessage(["content"]);
+    assert.ok(contentOnly.startsWith(`${DRIFT_MARKER} English drift detected in content.`));
+    assert.equal(contentOnly.includes("English drift detected in thinking"), false);
+
+    const both = buildCorrectionMessage(["thinking", "content"]);
+    assert.ok(both.startsWith(`${DRIFT_MARKER} English drift detected in thinking and content.`));
+
+    const fallback = buildCorrectionMessage([]);
+    assert.ok(fallback.startsWith(`${DRIFT_MARKER} English drift detected in response.`));
+  });
 });
 
 describe("post-invocation hook CLI and adapter", () => {
