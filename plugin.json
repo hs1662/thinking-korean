@@ -1,0 +1,29 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "thinking-korean",
+  "displayName": "Thinking Korean",
+  "version": "1.0.0",
+  "description": "Keep model thinking traces and responses in Korean from start to finish with an always-on rule and automatic English-drift recovery.",
+  "logo": "assets/logo.svg",
+  "author": {
+    "name": "hs1662",
+    "url": "https://github.com/hs1662"
+  },
+  "homepage": "https://github.com/hs1662/thinking-korean",
+  "repository": "https://github.com/hs1662/thinking-korean",
+  "license": "MIT",
+  "keywords": [
+    "korean",
+    "thinking",
+    "reasoning",
+    "language",
+    "i18n",
+    "hooks",
+    "rules"
+  ],
+  "suggestedPrompts": [
+    "이 저장소의 핵심 구조를 분석하고 주요 모듈 간 의존성을 단계별로 설명해 줘",
+    "실패하는 테스트의 원인을 코드 추적부터 수정안 검증까지 단계별로 진단해 줘",
+    "이 함수의 동시성 경합 가능성을 점검하고 안전한 리팩터링 방안을 비교해 줘"
+  ]
+}

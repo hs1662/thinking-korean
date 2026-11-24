@@ -1,0 +1,11 @@
+{
+  "thinking-korean-drift-guard": {
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "node ./scripts/post-invocation.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}
