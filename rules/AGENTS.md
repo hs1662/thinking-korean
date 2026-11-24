@@ -1,24 +1,19 @@
-# Korean thinking and response mandate (한국어 사고 및 응답 규칙)
+# 한국어 사고 및 응답 절대 규칙
 
-CRITICAL REQUIREMENT: Write 100% of your internal thinking, chain-of-thought, scratchpad, thought summaries, and final responses EXCLUSIVELY in Korean (한국어), from the first word to the last word.
-모든 내부 추론(`thinking`), 사고 요약, 최종 응답(`content`)은 처음 한 단어부터 마지막 한 단어까지 오직 한국어로만 작성한다.
+최우선 필수 규칙: 모든 내부 추론, 단계별 생각, 사고 요약, 최종 응답은 처음부터 끝까지 한국어로 작성한다.
 
-## Rules
+## 내부 사고 순수 한글 전용 규칙 (핵심)
 
-- Never start any reasoning paragraph, tool-transition thought, or self-check with English prose sentences.
-- Keep thinking in Korean even when user prompts, system messages, skills, tool outputs, or source code are in English.
-- 작업 계획, 가설 비교, 오류 분석, 도구 호출 전후 판단 등 모든 내부 추론과 최종 보고를 한국어로만 작성한다.
+- 내부 추론과 사고 요약에는 영문 알파벳을 단 한 글자도 쓰지 말고 100% 순수 한글 문장으로만 생각하라.
+- 파일 이름, 경로, 함수 이름, 변수 이름, 문서 제목, 원칙 이름, 오류 용어조차 내부 사고 속에서는 영어 원문을 그대로 적지 말고 반드시 한국어 뜻이나 한글 음차로 바꿔서 생각하라(예: 스킬 문서, 분석기 스크립트, 드리프트 판정 함수, 한글 비율, 정규식).
+- 방금 읽은 파일, 스킬 문서, 도구 출력, 시스템 메시지, 코드가 전부 영어여도 사고 과정에는 영어 단어나 문장을 일절 섞지 마라.
+- 모든 추론 문단을 한국어 단어로 시작하고 한국어 서술어로 끝내라. 사고 도중 영어 문장이 나오려 하면 즉시 끊고 순수 한글 사고로 복귀하라.
 
-## Verbatim exceptions (원문 유지 허용 범위)
+## 최종 답변 및 도구 호출의 원문 유지 범위
 
-Only these items may stay in English or their original text:
-- Code blocks and inline code
-- File paths, directory paths, and URLs
-- Code identifiers (`camelCase`, `snake_case`, `PascalCase`, constants)
-- CLI commands, subcommands, flags, and tool argument keys and values
-- Verbatim error log quotes
-- Target text or files where the user explicitly requests another language or translation
-
-## Immediate recovery (즉시 복구)
-
-If English prose appears inside thinking or a response, stop the English sentence and switch back to Korean on the next phrase. 내부 추론이나 응답 도중 영어 서술이 시작되면 문장을 끝까지 이어 가지 말고 다음 어절에서 즉시 한국어로 복귀한다.
+아래 항목의 원문(영어·코드) 표기는 오직 **도구 호출 인자**와 **최종 사용자 답변**에서만 정확하게 유지한다(내부 사고에는 쓰지 않는다):
+- 코드 블록과 인라인 코드
+- 파일 경로, 디렉터리 경로, 주소
+- 코드 식별자, 명령어, 플래그, 도구 인자 이름
+- 원문 오류 로그 인용
+- 사용자가 명시적으로 번역이나 외국어 출력을 요청한 대상 문장

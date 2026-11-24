@@ -2,32 +2,119 @@ export const MIN_NATURAL_CHARS = 24;
 export const MIN_HANGUL_RATIO = 0.45;
 export const MIN_LATIN_CHARS_FOR_DRIFT = 16;
 export const ENGLISH_RUN_WORD_THRESHOLD = 8;
-export const SEGMENT_MIN_NATURAL_CHARS = 40;
+export const SEGMENT_MIN_NATURAL_CHARS = 32;
 export const SEGMENT_MAX_HANGUL_RATIO = 0.25;
+export const SHORT_ENGLISH_PROSE_WORD_THRESHOLD = 4;
 
-const FENCED_CODE_RE = /(^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n[ \t]*\2[ \t]*(?=\n|$)|$)/g;
-const BLOCKQUOTE_LINE_RE = /^[ \t]*>.*$/gm;
-const INLINE_CODE_RE = /(`+)[^`\n]*?\1/g;
-const DOUBLE_QUOTED_RE = /"(?:\\.|[^"\\\n])*"/g;
+const MAX_SHORT_TOKEN_QUOTE_CHARS = 60;
+const MAX_SHORT_TOKEN_QUOTE_WORDS = 4;
+
+const CLI_UI_HINT_LINE_RE =
+  /^[ \t]*(?:[-*][ \t]+)?(?:Run|Use|Type)\s+`?\/[a-z][a-z0-9_-]*(?:[ \t]+[a-z0-9_-]+){0,3}`?[ \t]*\([^)\n]{1,40}\)[ \t]*(?:to[ \t]+[^\n]{1,60})?$/gim;
+const ERROR_QUOTE_RE =
+  /^(?:[A-Z][A-Za-z0-9_]*Error:|Error:|Exception:|Traceback\b|FAIL(?:ED)?\b|FATAL\b|WARN(?:ING)?\b|ERR!|ENOENT\b|EACCES\b|EPERM\b|ECONNREFUSED\b|ETIMEDOUT\b|EISDIR\b|ENOTDIR\b|SyntaxError\b|TypeError\b|ReferenceError\b|RangeError\b|AssertionError\b|Unexpected\s+(?:end|token|identifier|EOF|character)|Cannot\s+(?:read|find|resolve|open|access)\b|Failed\s+to\b|Could\s+not\b|Unable\s+to\b|Permission\s+denied\b|No\s+such\s+file\b|at\s+\S+\s*\([^)\n]+\))/;
+const DOUBLE_QUOTED_RE = /"((?:\\.|[^"\\\n])*)"/g;
 const URL_RE = /\b(?:https?|ftp|file):\/\/[^\s<>)"'`\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+/gi;
-const XML_TAG_RE = /<\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s+[^<>\n]*?)?\/?>/g;
-const WINDOWS_PATH_RE = /\b[A-Za-z]:\\[^\s"'`<>()[\]{},;\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+/g;
-const UNIX_PATH_RE = /(?<=^|[\s(\[{,:;])(?:\.{1,2}|~)?\/[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+)*/g;
-const RELATIVE_PATH_RE = /(?<=^|[\s(\[{,:;])[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+)+/g;
-const LONG_FLAG_RE = /(?<=^|[\s(\[{,:;])--[A-Za-z0-9][A-Za-z0-9._-]*(?:=[^\s"'`<>()[\]{},;\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+)?/g;
-const SHORT_FLAG_RE = /(?<=^|[\s(\[{,:;])-[A-Za-z](?=$|[\s)\]},;:])/g;
+const XML_TAG_RE =
+  /(?<![A-Za-z0-9_])<\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s+[A-Za-z_:][A-Za-z0-9:._-]*\s*=\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s"'=<>`]+))*\s*\/?>/g;
+const WINDOWS_PATH_RE = /\b[A-Za-z]:\\[^\s"'`<>()[\]{},;*\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+/g;
+const UNIX_PATH_RE =
+  /(?<=^|[\s(\[{,:;*_'"`])(?:\.{1,2}|~)?\/[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+)*\/?/g;
+const RELATIVE_PATH_RE =
+  /(?<=^|[\s(\[{,:;*_'"`])(?:[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+)+\/?|[A-Za-z0-9._@+-]+\/)(?=$|[\s)\]},;:*_'"`\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3])/g;
+const LONG_FLAG_RE =
+  /(?<=^|[\s(\[{,:;*_'"`])--[A-Za-z0-9][A-Za-z0-9._-]*(?:=[^\s"'`<>()[\]{},;*\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+)?/g;
+const SHORT_FLAG_RE =
+  /(?<=^|[\s(\[{,:;*_'"`])-[A-Za-z](?=$|[\s)\]},;:*_'"`\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3])/g;
+const DOTFILE_RE =
+  /(?<=^|[\s(\[{,:;*_'"`])\.[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*(?=$|[\s)\]},;:*_'"`\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3])/g;
 const DOTTED_PATH_RE = /\b[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+\b/g;
 const SNAKE_IDENT_RE = /\b(?:_[A-Za-z0-9_]+|[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+)\b/g;
+const KEBAB_IDENT_RE = /(?<![A-Za-z0-9_-])[a-z][a-z0-9]*(?:-[a-z0-9]+)+(?![A-Za-z0-9_-])/g;
 const CAMEL_IDENT_RE = /\b[a-z]+[A-Z][A-Za-z0-9]*\b/g;
 const PASCAL_IDENT_RE = /\b(?:[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*|[A-Z]{2,}[a-z][A-Za-z0-9]*)\b/g;
+const UPPER_RUN_RE = /\b[A-Z]{2,}(?:[0-9]+[A-Z]*)*(?:[ \t]+[A-Z]{2,}(?:[0-9]+[A-Z]*)*)*\b/g;
+
+const UPPER_PROSE_STOPWORDS = new Set([
+  "ABOUT",
+  "AFTER",
+  "ALL",
+  "ALSO",
+  "AND",
+  "ANY",
+  "ARE",
+  "BEEN",
+  "BEFORE",
+  "BUT",
+  "CAN",
+  "CHECK",
+  "COULD",
+  "DID",
+  "DOES",
+  "EACH",
+  "ELSE",
+  "FIRST",
+  "FOR",
+  "FROM",
+  "HAS",
+  "HAVE",
+  "HELLO",
+  "HERE",
+  "HOW",
+  "INTO",
+  "JUST",
+  "LAST",
+  "LET",
+  "MAY",
+  "MORE",
+  "MUST",
+  "NEXT",
+  "NOT",
+  "NOW",
+  "ONLY",
+  "OUR",
+  "OVER",
+  "PLEASE",
+  "SHOULD",
+  "SOME",
+  "SORRY",
+  "STOP",
+  "THANK",
+  "THAT",
+  "THE",
+  "THEM",
+  "THEN",
+  "THEY",
+  "THIS",
+  "VERY",
+  "WAIT",
+  "WAS",
+  "WERE",
+  "WHAT",
+  "WHEN",
+  "WHO",
+  "WHY",
+  "WILL",
+  "WITH",
+  "WOULD",
+  "YOUR",
+]);
 
 const HANGUL_RE = /[\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]/g;
+const HAS_HANGUL_RE = /[\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]/;
 const LATIN_RE = /[A-Za-z]/g;
+const ENGLISH_WORD_RE = /[A-Za-z]+(?:['’-][A-Za-z]+)*/g;
 const PROSE_TOKEN_RE = /[\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+|[A-Za-z]+(?:['’-][A-Za-z]+)*/g;
+const TABLE_SEPARATOR_LINE_RE = /^[ \t]*\|?(?:[ \t]*:?-{2,}:?[ \t]*\|)+[ \t]*:?-{2,}:?[ \t]*\|?[ \t]*$/;
+const BULLET_PREFIX_RE = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/;
 
 function countMatches(text, regex) {
   const matches = text.match(regex);
   return matches ? matches.length : 0;
+}
+
+function countEnglishWords(text) {
+  return countMatches(text, ENGLISH_WORD_RE);
 }
 
 function measureLanguage(text) {
@@ -38,14 +125,210 @@ function measureLanguage(text) {
   return { hangulCount, latinCount, naturalCharCount, hangulRatio };
 }
 
-function hasDriftedSegment(naturalText, { segmentMinNaturalChars, segmentMaxHangulRatio, minLatinCharsForDrift }) {
-  const segments = new Set([
-    ...naturalText.split(/\n{2,}/),
-    ...naturalText.split(/\n+/),
-  ]);
+function stripFencedCodeBlocks(text) {
+  const lines = text.split("\n");
+  const out = [];
+  let inFence = false;
+  let fenceChar = "";
+  let fenceLen = 0;
 
-  for (const segment of segments) {
-    const metrics = measureLanguage(segment);
+  for (const line of lines) {
+    if (!inFence) {
+      const openMatch = line.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+      if (openMatch) {
+        const marker = openMatch[1];
+        const info = openMatch[2];
+        const ch = marker[0];
+        if (!info.includes(ch)) {
+          inFence = true;
+          fenceChar = ch;
+          fenceLen = marker.length;
+          out.push("");
+          continue;
+        }
+      }
+      out.push(line);
+      continue;
+    }
+
+    const closeMatch = line.match(/^[ \t]*(`{3,}|~{3,})[ \t]*$/);
+    if (closeMatch && closeMatch[1][0] === fenceChar && closeMatch[1].length >= fenceLen) {
+      inFence = false;
+      fenceChar = "";
+      fenceLen = 0;
+      out.push("");
+    }
+  }
+
+  return out.join("\n");
+}
+
+function stripInlineCodeLine(line) {
+  if (!line.includes("`")) {
+    return line;
+  }
+
+  const runs = [];
+  for (let i = 0; i < line.length; ) {
+    if (line[i] === "`") {
+      let j = i + 1;
+      while (j < line.length && line[j] === "`") {
+        j += 1;
+      }
+      runs.push({ start: i, end: j, len: j - i });
+      i = j;
+    } else {
+      i += 1;
+    }
+  }
+
+  const indicesByLen = new Map();
+  for (let idx = 0; idx < runs.length; idx += 1) {
+    const len = runs[idx].len;
+    let list = indicesByLen.get(len);
+    if (!list) {
+      list = [];
+      indicesByLen.set(len, list);
+    }
+    list.push(idx);
+  }
+
+  const cursorByLen = new Map();
+  let result = "";
+  let pos = 0;
+
+  for (let idx = 0; idx < runs.length; idx += 1) {
+    const run = runs[idx];
+    if (run.start < pos) {
+      continue;
+    }
+
+    const list = indicesByLen.get(run.len);
+    let cursor = cursorByLen.get(run.len) ?? 0;
+    while (cursor < list.length && list[cursor] <= idx) {
+      cursor += 1;
+    }
+    cursorByLen.set(run.len, cursor);
+
+    if (cursor < list.length) {
+      const closeRun = runs[list[cursor]];
+      result += line.slice(pos, run.start);
+      result += " ";
+      pos = closeRun.end;
+      cursorByLen.set(run.len, cursor + 1);
+    }
+  }
+
+  result += line.slice(pos);
+  return result;
+}
+
+function stripInlineCode(text) {
+  if (!text.includes("`")) {
+    return text;
+  }
+  return text.split("\n").map(stripInlineCodeLine).join("\n");
+}
+
+function stripBlockquotes(text) {
+  return text
+    .split("\n")
+    .map((line) => {
+      if (!/^[ \t]*>/.test(line)) {
+        return line;
+      }
+      const inner = line.replace(/^[ \t]*(?:>[ \t]?)+/, "").trim();
+      if (inner.length === 0 || ERROR_QUOTE_RE.test(inner)) {
+        return "";
+      }
+      return inner;
+    })
+    .join("\n");
+}
+
+function stripDoubleQuotes(text) {
+  return text.replace(DOUBLE_QUOTED_RE, (_full, rawInner) => {
+    const inner = rawInner.trim();
+    if (inner.length === 0) {
+      return " ";
+    }
+    if (HAS_HANGUL_RE.test(inner)) {
+      return ` ${inner} `;
+    }
+    if (ERROR_QUOTE_RE.test(inner)) {
+      return " ";
+    }
+    if (inner.length <= MAX_SHORT_TOKEN_QUOTE_CHARS && countEnglishWords(inner) <= MAX_SHORT_TOKEN_QUOTE_WORDS) {
+      return " ";
+    }
+    return ` ${inner} `;
+  });
+}
+
+function stripTechnicalAcronyms(text) {
+  return text.replace(UPPER_RUN_RE, (match) => {
+    const words = match.split(/[ \t]+/);
+    if (words.length >= 4) {
+      return match;
+    }
+    if (words.length >= 2 && words.some((word) => UPPER_PROSE_STOPWORDS.has(word))) {
+      return match;
+    }
+    return words
+      .map((word) => (word.length <= 8 && !UPPER_PROSE_STOPWORDS.has(word) ? " " : word))
+      .join(" ");
+  });
+}
+
+function isStructuredNonProseLine(line) {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) {
+    return true;
+  }
+  if (TABLE_SEPARATOR_LINE_RE.test(trimmed)) {
+    return true;
+  }
+
+  const pipeCount = countMatches(trimmed, /\|/g);
+  if (pipeCount >= 2) {
+    const cells = trimmed
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|");
+    if (cells.every((cell) => countEnglishWords(cell) <= 4)) {
+      return true;
+    }
+  }
+
+  if (BULLET_PREFIX_RE.test(trimmed)) {
+    const body = trimmed.replace(BULLET_PREFIX_RE, "");
+    if (!HAS_HANGUL_RE.test(body) && countEnglishWords(body) <= 3) {
+      return true;
+    }
+  }
+
+  const commaCount = countMatches(trimmed, /,/g);
+  if (commaCount >= 2 && !HAS_HANGUL_RE.test(trimmed)) {
+    const items = trimmed.split(",").map((item) => item.trim()).filter(Boolean);
+    if (items.length >= 3 && items.every((item) => countEnglishWords(item) <= 3)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasDriftedSegment(
+  naturalText,
+  { segmentMinNaturalChars, segmentMaxHangulRatio, minLatinCharsForDrift, shortEnglishProseWordThreshold },
+) {
+  const paragraphs = naturalText.split(/\n{2,}/);
+  for (const paragraph of paragraphs) {
+    const proseLines = paragraph.split("\n").filter((line) => !isStructuredNonProseLine(line));
+    if (proseLines.length === 0) {
+      continue;
+    }
+    const metrics = measureLanguage(proseLines.join("\n"));
     if (
       metrics.naturalCharCount >= segmentMinNaturalChars &&
       metrics.latinCount >= minLatinCharsForDrift &&
@@ -55,22 +338,26 @@ function hasDriftedSegment(naturalText, { segmentMinNaturalChars, segmentMaxHang
     }
   }
 
-  return false;
-}
-
-function hasEnglishWordRun(naturalText, threshold) {
-  const paragraphs = naturalText.split(/\n{2,}/);
-
-  for (const paragraph of paragraphs) {
-    let run = 0;
-    const tokens = paragraph.match(PROSE_TOKEN_RE) ?? [];
-    for (const token of tokens) {
-      if (token.charCodeAt(0) > 127) {
-        run = 0;
-        continue;
-      }
-      run += 1;
-      if (run >= threshold) {
+  let shortEnglishProseLineCount = 0;
+  for (const line of naturalText.split(/\n+/)) {
+    if (isStructuredNonProseLine(line)) {
+      continue;
+    }
+    const metrics = measureLanguage(line);
+    if (
+      metrics.naturalCharCount >= segmentMinNaturalChars &&
+      metrics.latinCount >= minLatinCharsForDrift &&
+      metrics.hangulRatio <= segmentMaxHangulRatio
+    ) {
+      return true;
+    }
+    if (
+      metrics.hangulCount === 0 &&
+      metrics.latinCount >= minLatinCharsForDrift &&
+      countEnglishWords(line) >= shortEnglishProseWordThreshold
+    ) {
+      shortEnglishProseLineCount += 1;
+      if (shortEnglishProseLineCount >= 2) {
         return true;
       }
     }
@@ -79,28 +366,83 @@ function hasEnglishWordRun(naturalText, threshold) {
   return false;
 }
 
+function hasEnglishWordRun(naturalText, threshold) {
+  for (const line of naturalText.split("\n")) {
+    const hardChunks = line.split(/[|;:]+/);
+    for (const hardChunk of hardChunks) {
+      const commaParts = hardChunk.split(",");
+      let run = 0;
+
+      for (let i = 0; i < commaParts.length; i += 1) {
+        const part = commaParts[i];
+        const tokens = part.match(PROSE_TOKEN_RE) ?? [];
+        const englishCountInPart = tokens.reduce(
+          (count, token) => count + (token.charCodeAt(0) <= 127 ? 1 : 0),
+          0,
+        );
+        const isShortListItem = i > 0 && englishCountInPart <= 3;
+
+        if (isShortListItem) {
+          run = 0;
+        }
+
+        for (const token of tokens) {
+          if (token.charCodeAt(0) > 127) {
+            run = 0;
+            continue;
+          }
+          run += 1;
+          if (run >= threshold) {
+            return true;
+          }
+        }
+
+        if (englishCountInPart <= 3) {
+          run = 0;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function countNonStructuredEnglishWords(naturalText) {
+  let words = 0;
+  for (const line of naturalText.split("\n")) {
+    if (isStructuredNonProseLine(line)) {
+      continue;
+    }
+    words += countEnglishWords(line);
+  }
+  return words;
+}
+
 export function extractNaturalText(rawText) {
   if (typeof rawText !== "string" || rawText.length === 0) {
     return "";
   }
 
-  const stripped = rawText
-    .replace(/\r\n?/g, "\n")
-    .replace(FENCED_CODE_RE, "\n")
-    .replace(BLOCKQUOTE_LINE_RE, "")
-    .replace(INLINE_CODE_RE, " ")
-    .replace(DOUBLE_QUOTED_RE, " ")
-    .replace(URL_RE, " ")
-    .replace(XML_TAG_RE, " ")
+  const normalized = rawText.replace(/\r\n?/g, "\n");
+  const withoutFences = stripFencedCodeBlocks(normalized);
+  const withoutHints = withoutFences.replace(CLI_UI_HINT_LINE_RE, "");
+  const withoutInline = stripInlineCode(stripBlockquotes(withoutHints));
+  const withoutXmlAndUrls = withoutInline.replace(URL_RE, " ").replace(XML_TAG_RE, " ");
+  const withoutQuotes = stripDoubleQuotes(withoutXmlAndUrls);
+  const withoutTechnical = withoutQuotes
     .replace(WINDOWS_PATH_RE, " ")
     .replace(UNIX_PATH_RE, " ")
     .replace(RELATIVE_PATH_RE, " ")
     .replace(LONG_FLAG_RE, " ")
     .replace(SHORT_FLAG_RE, " ")
+    .replace(DOTFILE_RE, " ")
     .replace(DOTTED_PATH_RE, " ")
     .replace(SNAKE_IDENT_RE, " ")
+    .replace(KEBAB_IDENT_RE, " ")
     .replace(CAMEL_IDENT_RE, " ")
     .replace(PASCAL_IDENT_RE, " ");
+
+  const stripped = stripTechnicalAcronyms(withoutTechnical);
 
   return stripped
     .split("\n")
@@ -118,6 +460,7 @@ export function analyzeField(field, rawText, options = {}) {
     englishRunWordThreshold = ENGLISH_RUN_WORD_THRESHOLD,
     segmentMinNaturalChars = SEGMENT_MIN_NATURAL_CHARS,
     segmentMaxHangulRatio = SEGMENT_MAX_HANGUL_RATIO,
+    shortEnglishProseWordThreshold = SHORT_ENGLISH_PROSE_WORD_THRESHOLD,
   } = options;
 
   const normalizedRaw = typeof rawText === "string" ? rawText : "";
@@ -130,6 +473,13 @@ export function analyzeField(field, rawText, options = {}) {
   };
 
   if (metrics.naturalCharCount < minNaturalChars) {
+    if (
+      metrics.hangulCount === 0 &&
+      metrics.latinCount >= minLatinCharsForDrift &&
+      countNonStructuredEnglishWords(naturalText) >= shortEnglishProseWordThreshold
+    ) {
+      return { ...base, status: "drifted", driftReason: "short_english_prose" };
+    }
     return { ...base, status: "insufficient", driftReason: "none" };
   }
 
@@ -138,10 +488,25 @@ export function analyzeField(field, rawText, options = {}) {
   }
 
   if (metrics.hangulRatio < minHangulRatio) {
-    return { ...base, status: "drifted", driftReason: "low_hangul_ratio" };
+    const proseLines = naturalText.split("\n").filter((line) => !isStructuredNonProseLine(line));
+    const proseMetrics = proseLines.length > 0 ? measureLanguage(proseLines.join("\n")) : null;
+    const proseIsKorean =
+      proseMetrics !== null &&
+      proseMetrics.hangulCount >= minNaturalChars &&
+      proseMetrics.hangulRatio >= minHangulRatio;
+    if (!proseIsKorean) {
+      return { ...base, status: "drifted", driftReason: "low_hangul_ratio" };
+    }
   }
 
-  if (hasDriftedSegment(naturalText, { segmentMinNaturalChars, segmentMaxHangulRatio, minLatinCharsForDrift })) {
+  if (
+    hasDriftedSegment(naturalText, {
+      segmentMinNaturalChars,
+      segmentMaxHangulRatio,
+      minLatinCharsForDrift,
+      shortEnglishProseWordThreshold,
+    })
+  ) {
     return { ...base, status: "drifted", driftReason: "english_segment" };
   }
 
