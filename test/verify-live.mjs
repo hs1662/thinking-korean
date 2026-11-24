@@ -1,81 +1,345 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { evaluatePlannerResponse } from "../scripts/analyzer.mjs";
-import { DRIFT_MARKER, parseTranscriptJsonl } from "../scripts/transcript.mjs";
+import * as transcriptMod from "../scripts/transcript.mjs";
+
+const { parseTranscriptJsonl, DRIFT_MARKER } = transcriptMod;
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(TEST_DIR, "..");
 const DEFAULT_MODELS = ["gemini-4-neon-xhigh", "claude-opus-5-5-high"];
+export const DEFAULT_TIMEOUT_SECONDS = 180;
+const HARD_KILL_GRACE_MS = 10_000;
 const PLUGIN_ENTRIES = ["plugin.json", "hooks.json", "rules", "scripts", "assets"];
+const AUTH_AND_BUILTIN_ITEMS = ["antigravity-oauth-token", "builtin", "installation_id"];
+const FALLBACK_DRIFT_MARKERS = ["[한국어사고:영어이탈]", "[thinking-korean:drift]"];
 
-const CASES = [
+const HEAVY_ENGLISH_SKILL_DOC = `---
+name: engineering-discipline
+description: Concise engineering workflow guidelines covering architecture boundaries, deterministic verification, diff sizing, and review hygiene.
+---
+
+# Engineering Discipline Guide
+
+Use this reference document when auditing a module, refactoring state transitions, or validating CLI and hook behavior across repositories.
+
+## Platform Adaptation
+
+Different agent runtimes expose distinct tool names, transcript schemas, and hook lifecycles. Never assume a single cross-runtime mapping without verifying the active runtime contract:
+
+- **Hook execution boundaries**: Validate whether a hook runs before model invocation, after tool completion, or only at session startup. Prefer stateless transcript inspection over brittle hidden files whenever the runtime provides a full JSONL log.
+- **Process isolation**: Child CLI runs must strip inherited server address and authentication socket variables so they do not attach to a parent language server loaded with unrelated global plugins.
+- **Artifact hygiene**: Temporary workspaces, conversation logs, and benchmark fixtures must live inside disposable directories and be cleaned up automatically unless explicit debugging flags are set.
+
+## Non-Negotiable Rules
+
+1. **Restate the target contract before editing.** Identify which files you own, what shared interfaces other modules rely on, and what observable behavior defines completion.
+2. **Trace root causes before adding guards.** A fallback guard is legitimate only when the input state is genuinely valid at a system boundary. Do not mask malformed regular expressions, leaked globals, or silent status misclassifications with ad-hoc retries.
+3. **Prefer deterministic line scanners over fragile backtracking regexes.** Multi-line markdown fences, nested backtick spans, and inline comparison operators break naive regular expressions and silently erase natural language prose.
+4. **Separate user-facing verbatim requirements from internal reasoning hygiene.** Technical identifiers, CLI flags, file paths, and error quotes must remain verbatim in tool arguments and final responses without polluting natural-language checks.
+5. **Explain every reported metric.** Unweighted step averages distort long multi-step sessions when a 10-character step weighs the same as a 2,000-character analysis. Always report character-weighted ratios alongside step counts.
+
+## Core Principles
+
+- **Boundary Discipline**: Validate untrusted inputs at entrypoints (stdin JSON payloads, CLI flags, JSONL lines, filesystem paths). Keep pure scoring and decision logic free of I/O side effects so unit tests exercise every branch deterministically.
+- **Model the Domain**: Encode lifecycle states explicitly (pass, recovered, drifted, no_thinking, error) instead of inferring success from the absence of a single counter. An empty thinking trace is not a passing Korean trace.
+- **Make Operations Idempotent**: Repeated hook invocations over the same transcript step must converge cleanly without duplicating injected messages or corrupting conversation history.
+- **Guard the Context Window**: Cap consecutive unrecovered prompt injections when a downstream summarizer ignores corrections, while preserving independent safety budgets for user-facing response drift.
+- **Test Behavior, Not Implementation**: Assert end-to-end observable outcomes—whether drift is caught, whether translation requests avoid false positives, and whether recovery resets backoff—rather than private helper internals.
+- **Prove It Works**: Validate syntax, strict manifest schemas, file permissions in the git index, and isolated live transcripts before declaring a change shippable.
+
+## Verification Checklist
+
+When auditing a text analyzer and hook pipeline against real transcripts, check each boundary explicitly:
+
+- **Fence and inline-code stripping**: Confirm CommonMark closing fences longer than the opening fence do not swallow trailing English paragraphs, and confirm multi-backtick spans do not leak inner words.
+- **Quote and blockquote handling**: Preserve short verbatim error messages while keeping long English prose inside quotes or blockquotes evaluable for drift.
+- **Technical token exemptions**: Avoid false positives on uppercase acronyms (\`CLI\`, \`HTTP\`, \`API\`, \`JSONL\`, \`STDOUT\`), kebab-case slugs and model IDs, dotfiles, directory paths, markdown tables, and comma-separated identifier lists.
+- **Short prose and trailing segment detection**: Catch concise English transition thoughts and trailing English sentences appended after Korean explanations without flagging brief technical labels.
+- **Explicit translation requests**: Inspect the user request body (excluding runtime metadata blocks) so explicit requests to translate or respond in English exempt response content without disabling Korean internal reasoning checks.
+- **Large transcript latency**: Scan raw buffers line-by-line and parse only relevant event records (\`PLANNER_RESPONSE\`, \`SYSTEM_MESSAGE\`, \`USER_INPUT\`) so multi-megabyte tool outputs stay well within strict hook timeouts.
+
+## Reporting Format
+
+Write concise, direct analysis grounded in specific code paths and measured evidence. Avoid speculative claims when a direct file read or command check can verify the behavior.
+`;
+
+export const CASES = [
   {
     name: "korean-reasoning",
     prompt:
       "분산 작업 큐에서 재시도 백오프와 멱등성 키를 함께 설계할 때 생길 수 있는 중복 실행 시나리오 3가지를 분석하고, 각각의 방지 전략과 트레이드오프를 한국어로 정리해 줘. 도구는 호출하지 말고 바로 추론해서 답해 줘.",
+    exemptContentDrift: false,
+    setupWorkspace: null,
   },
   {
     name: "tool-code-analysis",
     prompt:
       "src/analyzer.mjs 파일을 직접 읽고 analyzeField의 드리프트 판정 순서와 예외 필터링 로직을 한국어로 분석해 줘.",
+    exemptContentDrift: false,
+    setupWorkspace(workspaceDir) {
+      const sampleDir = join(workspaceDir, "src");
+      mkdirSync(sampleDir, { recursive: true });
+      cpSync(join(PLUGIN_ROOT, "scripts", "analyzer.mjs"), join(sampleDir, "analyzer.mjs"));
+    },
+  },
+  {
+    name: "heavy-english-skill-tools",
+    prompt:
+      "먼저 docs/SKILL.md 파일 전체와 src/analyzer.mjs 파일을 직접 읽은 뒤, (1) docs/SKILL.md의 핵심 원칙 3가지가 이 분석기 검증 흐름에 어떻게 적용될 수 있는지, (2) src/analyzer.mjs의 드리프트 판정과 예외 필터링 로직에서 주의해야 할 경계 조건 3가지를 한국어로 상세히 분석해 줘.",
+    exemptContentDrift: false,
+    setupWorkspace(workspaceDir) {
+      const docsDir = join(workspaceDir, "docs");
+      const sampleDir = join(workspaceDir, "src");
+      mkdirSync(docsDir, { recursive: true });
+      mkdirSync(sampleDir, { recursive: true });
+      writeFileSync(join(docsDir, "SKILL.md"), HEAVY_ENGLISH_SKILL_DOC, "utf8");
+      cpSync(join(PLUGIN_ROOT, "scripts", "analyzer.mjs"), join(sampleDir, "analyzer.mjs"));
+    },
+  },
+  {
+    name: "explicit-translation",
+    prompt:
+      "도구는 호출하지 말고, 아래 한국어 문단을 자연스러운 영어로 번역해 줘. 번역문만 출력해 줘.\n\n분산 시스템에서 재시도 정책을 설계할 때는 지수 백오프와 지터를 함께 적용해 동시 재시도 폭주를 막아야 한다. 또한 모든 쓰기 요청에 멱등성 키를 부여하면 네트워크 타임아웃 뒤 재전송이 발생해도 중복 처리를 안전하게 방지할 수 있다.",
+    exemptContentDrift: true,
+    setupWorkspace: null,
   },
 ];
 
+const CASE_BY_NAME = new Map(CASES.map((entry) => [entry.name, entry]));
+
 function printUsage() {
+  const caseNames = CASES.map((entry) => entry.name).join(",");
   process.stdout.write(
-    `Usage: node test/verify-live.mjs [--models ${DEFAULT_MODELS.join(",")}]\n`,
+    [
+      `Usage: node test/verify-live.mjs [options]`,
+      "",
+      "Options:",
+      `  --models <list>     Comma-separated model IDs (default: ${DEFAULT_MODELS.join(",")})`,
+      `  --cases <list>      Comma-separated test cases (default: ${caseNames})`,
+      `  --timeout <sec>     Per-case timeout in seconds (default: ${DEFAULT_TIMEOUT_SECONDS})`,
+      "  --keep-logs         Preserve isolated temp directories and brain transcripts",
+      "  -h, --help          Show this help message",
+      "",
+    ].join("\n"),
   );
 }
 
-function parseCliArgs(argv) {
+function parseCommaList(raw, flagName) {
+  const items = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (items.length === 0) {
+    throw new Error(`${flagName} must include at least one value`);
+  }
+  return items;
+}
+
+function parseTimeoutSeconds(raw) {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`Invalid --timeout value: ${raw} (expected a positive number of seconds)`);
+  }
+  return Math.ceil(value);
+}
+
+function resolveCases(caseNames) {
+  const selected = [];
+  const seen = new Set();
+  for (const name of caseNames) {
+    const found = CASE_BY_NAME.get(name);
+    if (!found) {
+      const valid = CASES.map((entry) => entry.name).join(", ");
+      throw new Error(`Unknown case "${name}". Valid cases: ${valid}`);
+    }
+    if (!seen.has(name)) {
+      seen.add(name);
+      selected.push(found);
+    }
+  }
+  return selected;
+}
+
+export function parseCliArgs(argv) {
   let models = [...DEFAULT_MODELS];
+  let selectedCases = [...CASES];
+  let timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
+  let keepLogs = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
-      return { help: true, models };
+      return {
+        help: true,
+        models,
+        cases: selectedCases,
+        timeoutSeconds,
+        timeoutMs: timeoutSeconds * 1000,
+        keepLogs,
+      };
+    }
+    if (arg === "--keep-logs") {
+      keepLogs = true;
+      continue;
     }
     if (arg === "--models") {
       const next = argv[i + 1];
       if (!next || next.startsWith("-")) {
         throw new Error("Missing value for --models");
       }
-      models = parseModelList(next);
+      models = parseCommaList(next, "--models");
       i += 1;
       continue;
     }
     if (arg.startsWith("--models=")) {
-      models = parseModelList(arg.slice("--models=".length));
+      models = parseCommaList(arg.slice("--models=".length), "--models");
+      continue;
+    }
+    if (arg === "--cases") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        throw new Error("Missing value for --cases");
+      }
+      selectedCases = resolveCases(parseCommaList(next, "--cases"));
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--cases=")) {
+      selectedCases = resolveCases(parseCommaList(arg.slice("--cases=".length), "--cases"));
+      continue;
+    }
+    if (arg === "--timeout") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        throw new Error("Missing value for --timeout");
+      }
+      timeoutSeconds = parseTimeoutSeconds(next);
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--timeout=")) {
+      timeoutSeconds = parseTimeoutSeconds(arg.slice("--timeout=".length));
       continue;
     }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { help: false, models };
+  return {
+    help: false,
+    models,
+    cases: selectedCases,
+    timeoutSeconds,
+    timeoutMs: timeoutSeconds * 1000,
+    keepLogs,
+  };
 }
 
-function parseModelList(raw) {
-  const models = raw
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  if (models.length === 0) {
-    throw new Error("--models must include at least one model name");
+function readPluginManifest() {
+  const manifestPath = join(PLUGIN_ROOT, "plugin.json");
+  return JSON.parse(readFileSync(manifestPath, "utf8"));
+}
+
+function resolveSourceAppDataDirs() {
+  const candidates = [];
+  for (const envKey of ["ANTIGRAVITY_APP_DATA_DIR", "AGY_APP_DATA_DIR"]) {
+    const val = process.env[envKey];
+    if (val && existsSync(val) && !candidates.includes(val)) {
+      candidates.push(val);
+    }
   }
-  return models;
+  const defaultDir = join(homedir(), ".gemini", "antigravity-cli");
+  if (existsSync(defaultDir) && !candidates.includes(defaultDir)) {
+    candidates.push(defaultDir);
+  }
+  return candidates;
 }
 
-function createTempWorkspace() {
-  const workspace = mkdtempSync(join(tmpdir(), "thinking-korean-live-"));
-  const pluginDest = join(workspace, ".agents", "plugins", "thinking-korean");
-  mkdirSync(pluginDest, { recursive: true });
+export function buildIsolatedEnv(homeDir, appDataDir) {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("ANTIGRAVITY_") || key.startsWith("AGY_")) {
+      delete env[key];
+    }
+  }
+  env.HOME = homeDir;
+  env.ANTIGRAVITY_APP_DATA_DIR = appDataDir;
+  env.AGY_APP_DATA_DIR = appDataDir;
+  return env;
+}
 
+function safeRealpath(pathValue) {
+  try {
+    return realpathSync(pathValue);
+  } catch {
+    return resolve(pathValue);
+  }
+}
+
+function createIsolatedEnvironment(testCase, pluginManifest) {
+  const runRoot = mkdtempSync(join(tmpdir(), "thinking-korean-live-"));
+  const homeDir = join(runRoot, "home");
+  const appDataDir = join(homeDir, ".gemini", "antigravity-cli");
+  const configDir = join(homeDir, ".gemini", "config");
+  const configPluginsDir = join(configDir, "plugins");
+  const workspaceDir = join(runRoot, "workspace");
+
+  mkdirSync(appDataDir, { recursive: true });
+  mkdirSync(configPluginsDir, { recursive: true });
+  mkdirSync(workspaceDir, { recursive: true });
+
+  const sourceAppDataDirs = resolveSourceAppDataDirs();
+  for (const item of AUTH_AND_BUILTIN_ITEMS) {
+    for (const sourceDir of sourceAppDataDirs) {
+      const src = join(sourceDir, item);
+      if (existsSync(src)) {
+        const symlinkType = statSync(src).isDirectory() ? "dir" : "file";
+        symlinkSync(src, join(appDataDir, item), symlinkType);
+        break;
+      }
+    }
+  }
+
+  const trustedWorkspaces = Array.from(
+    new Set([runRoot, safeRealpath(runRoot), workspaceDir, safeRealpath(workspaceDir)]),
+  );
+
+  writeFileSync(
+    join(appDataDir, "settings.json"),
+    `${JSON.stringify(
+      {
+        allowNonWorkspaceAccess: true,
+        showThinking: true,
+        toolPermission: "always-proceed",
+        trustedWorkspaces,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  writeFileSync(join(configDir, "config.json"), `${JSON.stringify({ plugins: {} }, null, 2)}\n`, "utf8");
+
+  const pluginName = pluginManifest.name || "thinking-korean";
+  const pluginDest = join(configPluginsDir, pluginName);
+  mkdirSync(pluginDest, { recursive: true });
   for (const entry of PLUGIN_ENTRIES) {
     const src = join(PLUGIN_ROOT, entry);
     if (existsSync(src)) {
@@ -83,10 +347,110 @@ function createTempWorkspace() {
     }
   }
 
-  const sampleDir = join(workspace, "src");
-  mkdirSync(sampleDir, { recursive: true });
-  cpSync(join(PLUGIN_ROOT, "scripts", "analyzer.mjs"), join(sampleDir, "analyzer.mjs"));
-  return workspace;
+  if (typeof testCase.setupWorkspace === "function") {
+    testCase.setupWorkspace(workspaceDir);
+  }
+
+  const env = buildIsolatedEnv(homeDir, appDataDir);
+  const gitInit = spawnSync("git", ["init", "-q"], {
+    cwd: workspaceDir,
+    env,
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  if (gitInit.error || gitInit.status !== 0) {
+    const reason = gitInit.error?.message || (gitInit.stderr || `git init exited with ${gitInit.status}`).trim();
+    throw new Error(`Failed to initialize temp git workspace: ${reason}`);
+  }
+
+  return { runRoot, homeDir, appDataDir, workspaceDir, pluginDest, env };
+}
+
+function verifyIsolatedPlugin(workspaceDir, env, pluginDest, pluginManifest) {
+  const proc = spawnSync("agy", ["plugin", "list", "--json"], {
+    cwd: workspaceDir,
+    env,
+    encoding: "utf8",
+    timeout: 20_000,
+  });
+  if (proc.error) {
+    return { ok: false, error: `Failed to run agy plugin list: ${proc.error.message}`, loadedPlugins: [] };
+  }
+  if (proc.status !== 0) {
+    return {
+      ok: false,
+      error: `agy plugin list exited with ${proc.status}: ${(proc.stderr || "").trim()}`,
+      loadedPlugins: [],
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(proc.stdout || "[]");
+  } catch (error) {
+    return {
+      ok: false,
+      error: `Invalid JSON from agy plugin list: ${error.message}`,
+      loadedPlugins: [],
+    };
+  }
+
+  if (!Array.isArray(parsed)) {
+    return { ok: false, error: "Unexpected non-array output from agy plugin list", loadedPlugins: [] };
+  }
+
+  const loadedPlugins = parsed.map((entry) => ({
+    name: entry.name,
+    enabled: entry.enabled,
+    version: entry.version,
+    path: entry.path,
+    rules: entry.rules ?? [],
+    hooks: entry.hooks ?? [],
+  }));
+
+  const expectedName = pluginManifest.name || "thinking-korean";
+  if (loadedPlugins.length !== 1) {
+    return {
+      ok: false,
+      error: `Plugin isolation failed: expected only [${expectedName}], found [${loadedPlugins.map((p) => p.name).join(", ")}]`,
+      loadedPlugins,
+    };
+  }
+
+  const [onlyPlugin] = loadedPlugins;
+  if (onlyPlugin.name !== expectedName || onlyPlugin.enabled !== true) {
+    return {
+      ok: false,
+      error: `Expected enabled plugin "${expectedName}", found "${onlyPlugin.name}" (enabled=${onlyPlugin.enabled})`,
+      loadedPlugins,
+    };
+  }
+
+  if (safeRealpath(onlyPlugin.path || "") !== safeRealpath(pluginDest)) {
+    return {
+      ok: false,
+      error: `Plugin path not isolated: expected ${safeRealpath(pluginDest)}, got ${onlyPlugin.path}`,
+      loadedPlugins,
+    };
+  }
+
+  if (!Array.isArray(onlyPlugin.rules) || onlyPlugin.rules.length === 0) {
+    return {
+      ok: false,
+      error: `Plugin "${expectedName}" loaded without any rules`,
+      loadedPlugins,
+    };
+  }
+
+  if (!Array.isArray(onlyPlugin.hooks) || onlyPlugin.hooks.length === 0) {
+    return {
+      ok: false,
+      error: `Plugin "${expectedName}" loaded without any hooks`,
+      loadedPlugins,
+    };
+  }
+
+  return { ok: true, loadedPlugins };
 }
 
 function extractConversationId(stdout) {
@@ -112,8 +476,7 @@ function extractConversationId(stdout) {
   return null;
 }
 
-function resolveTranscriptPath(conversationId) {
-  const appDataDir = process.env.AGY_APP_DATA_DIR || join(homedir(), ".gemini", "antigravity-cli");
+function resolveIsolatedTranscriptPath(appDataDir, conversationId) {
   const logsDir = join(appDataDir, "brain", conversationId, ".system_generated", "logs");
   const fullPath = join(logsDir, "transcript_full.jsonl");
   if (existsSync(fullPath)) {
@@ -124,6 +487,21 @@ function resolveTranscriptPath(conversationId) {
     return compactPath;
   }
   return null;
+}
+
+function isDriftInjectionStep(step) {
+  if (typeof transcriptMod.isDriftMarkerStep === "function") {
+    return transcriptMod.isDriftMarkerStep(step);
+  }
+  if (!step || step.type !== "SYSTEM_MESSAGE" || typeof step.content !== "string") {
+    return false;
+  }
+  const markers = new Set([
+    ...(typeof DRIFT_MARKER === "string" && DRIFT_MARKER.length > 0 ? [DRIFT_MARKER] : []),
+    ...(Array.isArray(transcriptMod.LEGACY_DRIFT_MARKERS) ? transcriptMod.LEGACY_DRIFT_MARKERS : []),
+    ...FALLBACK_DRIFT_MARKERS,
+  ]);
+  return [...markers].some((marker) => step.content.includes(marker));
 }
 
 function roundRatio(value) {
@@ -141,28 +519,46 @@ function formatFieldResult(result) {
   };
 }
 
-function summarizeTranscript(steps) {
+export function summarizeTranscript(steps, testCase = {}) {
+  const exemptContentDrift = Boolean(testCase.exemptContentDrift);
   let driftInjections = 0;
+  let lastDriftInjectionPos = -1;
+  let lastDriftedPlannerPos = -1;
   const plannerSteps = [];
 
-  for (const step of steps) {
-    if (step.type === "SYSTEM_MESSAGE" && step.content.includes(DRIFT_MARKER)) {
+  for (let pos = 0; pos < steps.length; pos += 1) {
+    const step = steps[pos];
+    if (isDriftInjectionStep(step)) {
       driftInjections += 1;
+      lastDriftInjectionPos = pos;
       continue;
     }
     if (step.type !== "PLANNER_RESPONSE") {
       continue;
     }
     const evaluation = evaluatePlannerResponse(step);
+    const rawDriftedFields = evaluation.kind === "drifted" ? evaluation.driftedFields : [];
+    const effectiveDriftedFields = exemptContentDrift
+      ? rawDriftedFields.filter((field) => field !== "content")
+      : rawDriftedFields;
+    const effectiveKind = effectiveDriftedFields.length > 0 ? "drifted" : "ok";
+
+    if (effectiveKind === "drifted") {
+      lastDriftedPlannerPos = pos;
+    }
+
     plannerSteps.push({
+      _pos: pos,
       stepIndex: step.stepIndex,
-      kind: evaluation.kind,
-      driftedFields: evaluation.kind === "drifted" ? evaluation.driftedFields : [],
+      kind: effectiveKind,
+      driftedFields: effectiveDriftedFields,
+      ...(exemptContentDrift ? { contentExempted: true } : {}),
       thinking: formatFieldResult(evaluation.thinking),
       content: formatFieldResult(evaluation.content),
     });
   }
 
+  const koreanThinkingStepCount = plannerSteps.filter((step) => step.thinking.status === "korean").length;
   const driftedStepCount = plannerSteps.filter((step) => step.kind === "drifted").length;
   const thinkingWithNaturalText = plannerSteps.filter((step) => step.thinking.naturalCharCount > 0);
   const avgThinkingHangulRatio =
@@ -172,62 +568,138 @@ function summarizeTranscript(steps) {
             thinkingWithNaturalText.length,
         )
       : null;
+
+  const totalThinkingHangulChars = plannerSteps.reduce((sum, step) => sum + step.thinking.hangulCount, 0);
+  const totalThinkingNaturalChars = plannerSteps.reduce((sum, step) => sum + step.thinking.naturalCharCount, 0);
+  const weightedThinkingHangulRatio =
+    totalThinkingNaturalChars > 0 ? roundRatio(totalThinkingHangulChars / totalThinkingNaturalChars) : null;
+
   const finalStepKind = plannerSteps.length > 0 ? plannerSteps[plannerSteps.length - 1].kind : null;
+  const hasPostInjectionKoreanRecovery =
+    driftInjections > 0 &&
+    finalStepKind === "ok" &&
+    plannerSteps.some(
+      (step) =>
+        step._pos > lastDriftInjectionPos &&
+        step._pos > lastDriftedPlannerPos &&
+        step.thinking.status === "korean" &&
+        step.kind === "ok",
+    );
 
   let status;
+  let error = null;
+  let falsePositiveDriftInjection = false;
+
   if (plannerSteps.length === 0) {
     status = "error";
+    error = "No PLANNER_RESPONSE steps found in transcript";
+  } else if (exemptContentDrift && driftedStepCount === 0 && driftInjections > 0) {
+    status = "error";
+    falsePositiveDriftInjection = true;
+    error = `False-positive drift injection (${driftInjections}) triggered during explicit-translation case`;
   } else if (driftedStepCount === 0) {
-    status = "pass";
-  } else if (driftInjections > 0 && finalStepKind === "ok") {
+    status = koreanThinkingStepCount > 0 ? "pass" : "no_thinking";
+  } else if (hasPostInjectionKoreanRecovery) {
     status = "recovered";
   } else {
     status = "drifted";
   }
 
+  const publicPlannerSteps = plannerSteps.map(({ _pos, ...rest }) => rest);
+
   return {
     status,
     driftInjections,
-    plannerResponseCount: plannerSteps.length,
+    plannerResponseCount: publicPlannerSteps.length,
+    koreanThinkingStepCount,
     driftedStepCount,
     avgThinkingHangulRatio,
+    weightedThinkingHangulRatio,
+    totalThinkingHangulChars,
+    totalThinkingNaturalChars,
     finalStepKind,
-    plannerSteps,
+    ...(falsePositiveDriftInjection ? { falsePositiveDriftInjection: true } : {}),
+    ...(error ? { error } : {}),
+    plannerSteps: publicPlannerSteps,
   };
 }
 
-function runLiveCase(model, testCase) {
-  const workspace = createTempWorkspace();
+function runLiveCase(model, testCase, options, pluginManifest) {
+  let isolated;
   try {
+    isolated = createIsolatedEnvironment(testCase, pluginManifest);
+  } catch (error) {
+    return {
+      model,
+      case: testCase.name,
+      conversationId: null,
+      exitCode: 1,
+      status: "error",
+      error: error.message,
+    };
+  }
+
+  const { runRoot, appDataDir, workspaceDir, pluginDest, env } = isolated;
+  try {
+    const pluginCheck = verifyIsolatedPlugin(workspaceDir, env, pluginDest, pluginManifest);
+    if (!pluginCheck.ok) {
+      return {
+        model,
+        case: testCase.name,
+        conversationId: null,
+        exitCode: 1,
+        pluginVerified: false,
+        loadedPlugins: pluginCheck.loadedPlugins,
+        status: "error",
+        error: pluginCheck.error,
+        ...(options.keepLogs ? { runDir: runRoot } : {}),
+      };
+    }
+
+    const startedAt = Date.now();
     const proc = spawnSync(
       "agy",
       [
         "--model",
         model,
         "--dangerously-skip-permissions",
+        "--print-timeout",
+        `${options.timeoutSeconds}s`,
         "--output-format",
         "stream-json",
         "-p",
         testCase.prompt,
       ],
       {
-        cwd: workspace,
+        cwd: workspaceDir,
+        env,
         encoding: "utf8",
+        timeout: options.timeoutMs + HARD_KILL_GRACE_MS,
         maxBuffer: 32 * 1024 * 1024,
       },
     );
+    const elapsedMs = Date.now() - startedAt;
 
     const exitCode = proc.status ?? 1;
     const conversationId = extractConversationId(proc.stdout || "");
+    const keptFields = options.keepLogs ? { runDir: runRoot } : {};
 
     if (proc.error) {
+      const errorMessage =
+        proc.error.code === "ETIMEDOUT"
+          ? `agy timed out after ${options.timeoutSeconds}s`
+          : proc.error.message;
       return {
         model,
         case: testCase.name,
         conversationId,
         exitCode,
+        elapsedMs,
+        pluginVerified: true,
+        loadedPlugins: pluginCheck.loadedPlugins,
         status: "error",
-        error: proc.error.message,
+        error: errorMessage,
+        ...keptFields,
       };
     }
 
@@ -237,39 +709,58 @@ function runLiveCase(model, testCase) {
         case: testCase.name,
         conversationId: null,
         exitCode,
+        elapsedMs,
+        pluginVerified: true,
+        loadedPlugins: pluginCheck.loadedPlugins,
         status: "error",
         error: (proc.stderr || "No conversation_id found in agy stream-json output").trim(),
+        ...keptFields,
       };
     }
 
-    const transcriptPath = resolveTranscriptPath(conversationId);
+    const transcriptPath = resolveIsolatedTranscriptPath(appDataDir, conversationId);
     if (!transcriptPath) {
       return {
         model,
         case: testCase.name,
         conversationId,
         exitCode,
+        elapsedMs,
+        pluginVerified: true,
+        loadedPlugins: pluginCheck.loadedPlugins,
         status: "error",
-        error: `Transcript not found for conversation ${conversationId}`,
+        error: `Transcript not found in isolated appDataDir for conversation ${conversationId}`,
+        ...keptFields,
       };
     }
 
     const rawTranscript = readFileSync(transcriptPath, "utf8");
     const steps = parseTranscriptJsonl(rawTranscript);
-    const analysis = summarizeTranscript(steps);
+    const analysis = summarizeTranscript(steps, testCase);
+
+    const status = exitCode !== 0 ? "error" : analysis.status;
+    const error =
+      exitCode !== 0
+        ? (proc.stderr || `agy exited with ${exitCode}`).trim()
+        : analysis.error;
 
     return {
       model,
       case: testCase.name,
       conversationId,
       exitCode,
-      transcriptPath,
+      elapsedMs,
+      pluginVerified: true,
+      loadedPlugins: pluginCheck.loadedPlugins,
+      ...(options.keepLogs ? { runDir: runRoot, transcriptPath } : {}),
       ...analysis,
-      status: exitCode !== 0 ? "error" : analysis.status,
-      ...(exitCode !== 0 ? { error: (proc.stderr || `agy exited with ${exitCode}`).trim() } : {}),
+      status,
+      ...(error ? { error } : {}),
     };
   } finally {
-    rmSync(workspace, { recursive: true, force: true });
+    if (!options.keepLogs) {
+      rmSync(runRoot, { recursive: true, force: true });
+    }
   }
 }
 
@@ -300,10 +791,11 @@ function main() {
     return;
   }
 
+  const pluginManifest = readPluginManifest();
   const results = [];
   for (const model of options.models) {
-    for (const testCase of CASES) {
-      results.push(runLiveCase(model, testCase));
+    for (const testCase of options.cases) {
+      results.push(runLiveCase(model, testCase, options, pluginManifest));
     }
   }
 
@@ -312,18 +804,21 @@ function main() {
     pass: results.filter((entry) => entry.status === "pass").length,
     recovered: results.filter((entry) => entry.status === "recovered").length,
     drifted: results.filter((entry) => entry.status === "drifted").length,
+    no_thinking: results.filter((entry) => entry.status === "no_thinking").length,
     error: results.filter((entry) => entry.status === "error").length,
   };
 
   const report = {
     models: options.models,
-    cases: CASES.map((entry) => entry.name),
+    cases: options.cases.map((entry) => entry.name),
+    timeoutSeconds: options.timeoutSeconds,
+    keepLogs: options.keepLogs,
     totals,
     results,
   };
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  if (totals.error > 0 || totals.drifted > 0) {
+  if (totals.error > 0 || totals.drifted > 0 || totals.no_thinking > 0) {
     process.exitCode = 1;
   }
 }

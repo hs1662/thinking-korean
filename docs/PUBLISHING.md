@@ -8,7 +8,7 @@ This guide covers pre-publish checks, GitHub repository releases, and submission
 
 Complete every check from the repository root before you push a release tag.
 
-1. Run the 22 unit and hook subprocess tests and verify all 22 pass.
+1. Run the unit and hook subprocess test suite and verify all tests pass.
 
    ```sh
    node --test test/thinking-korean.test.mjs
@@ -20,14 +20,18 @@ Complete every check from the repository root before you push a release tag.
    agy plugin validate --strict --json .
    ```
 
-3. Verify `scripts/post-invocation.mjs` has executable mode `0755` (`-rwxr-xr-x`) on disk and `100755` in the git index.
+3. Verify executable scripts (`scripts/post-invocation.mjs` and `test/verify-live.mjs`) have executable mode `100755` in the git index (on-disk group/other bits depend on your local `umask` and are not tracked by git).
 
    ```sh
-   ls -l scripts/post-invocation.mjs
-   git ls-files -s scripts/post-invocation.mjs
+   git ls-files -s scripts/post-invocation.mjs test/verify-live.mjs
    ```
 
-   If the permission is not `0755`, run `chmod 755 scripts/post-invocation.mjs` and commit the mode change.
+   If either entry shows `100644`, mark it executable in the working tree and git index, then commit the mode change:
+
+   ```sh
+   chmod +x scripts/post-invocation.mjs test/verify-live.mjs
+   git update-index --chmod=+x scripts/post-invocation.mjs test/verify-live.mjs
+   ```
 
 4. Verify `assets/logo.svg` has a 1:1 `256x256` canvas (`viewBox="0 0 256 256"`) and outer padding around the rounded badge (`x="26" y="26" width="204" height="204"`).
 5. If this is a new release after `1.0.0`, update `"version"` in `plugin.json` using semantic versioning (`MAJOR.MINOR.PATCH`).
