@@ -30,6 +30,7 @@ import {
   isExplicitEnglishOutputRequest,
   parseTranscriptJsonl,
 } from "../scripts/transcript.mjs";
+import { summarizeTranscript } from "./verify-live.mjs";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(TEST_DIR, "..");
@@ -1013,5 +1014,340 @@ describe("post-invocation hook CLI and adapter", () => {
       }),
       {},
     );
+  });
+
+  it("does not skip PLANNER_RESPONSE or USER_INPUT when a nested type field appears before byte 256", () => {
+    const dir = createTempDir();
+    const transcriptPath = join(dir, "transcript_full.jsonl");
+    const padding = "A".repeat(300);
+
+    // Nested "type":"tool_result" sits inside the first 256 bytes, while top-level "type":"PLANNER_RESPONSE" comes after byte 256.
+    const nestedPlannerRecord = {
+      step_index: 1,
+      payload: { type: "tool_result", padding },
+      type: "PLANNER_RESPONSE",
+      thinking: "Let me inspect the parser implementation carefully before making any edit.",
+      content: "파서 구현을 확인하고 변경 사항을 한국어로 정리했다.",
+    };
+    assert.ok(JSON.stringify(nestedPlannerRecord).indexOf('"PLANNER_RESPONSE"') > 256);
+
+    writeFileSync(transcriptPath, `${JSON.stringify(nestedPlannerRecord)}\n`, "utf8");
+    const driftResult = handlePostInvocation(JSON.stringify({ hookEventName: "PostInvocation", transcriptPath }));
+    assert.equal(driftResult.injectSteps.length, 1);
+    assert.ok(driftResult.injectSteps[0].systemMessage.systemMessage.startsWith(DRIFT_MARKER));
+
+    // Nested "type":"tool_result" before byte 256 on USER_INPUT must still preserve explicit translation exemption.
+    const nestedUserInput = {
+      step_index: 0,
+      meta: { type: "tool_result", padding },
+      type: "USER_INPUT",
+      content: "<USER_REQUEST>\n이 문장을 영어로 해 줘\n</USER_REQUEST>",
+    };
+    assert.ok(JSON.stringify(nestedUserInput).indexOf('"USER_INPUT"') > 256);
+
+    const genericWithNestedPlanner = {
+      step_index: 1,
+      meta: { type: "PLANNER_RESPONSE" },
+      type: "GENERIC",
+      content: "Z".repeat(400_000),
+    };
+    const translatedResponse = {
+      step_index: 2,
+      type: "PLANNER_RESPONSE",
+      thinking: "먼저 원문의 핵심 의미를 한국어로 파악하고 자연스러운 표현 방향을 구상한다.",
+      content: "Here is the natural English translation of the requested sentence.",
+    };
+    writeFileSync(
+      transcriptPath,
+      toJsonl([nestedUserInput, genericWithNestedPlanner, translatedResponse]),
+      "utf8",
+    );
+    const exemptResult = handlePostInvocation(JSON.stringify({ hookEventName: "PostInvocation", transcriptPath }));
+    assert.deepEqual(exemptResult, {});
+  });
+
+  it("handles exact 256-byte lines and partial-chunk reads safely without scanning past bytesRead", () => {
+    const dir = createTempDir();
+    const transcriptPath = join(dir, "transcript_full.jsonl");
+
+    const buildExactByteRecord = (targetBytes, type, thinking) => {
+      const base = { step_index: 0, type, thinking, content: "한국어", pad: "" };
+      const overhead = Buffer.byteLength(JSON.stringify(base), "utf8");
+      base.pad = "P".repeat(Math.max(0, targetBytes - overhead));
+      const serialized = JSON.stringify(base);
+      assert.equal(Buffer.byteLength(serialized, "utf8"), targetBytes);
+      return serialized;
+    };
+
+    const line255 = buildExactByteRecord(
+      255,
+      "PLANNER_RESPONSE",
+      "한국어 사고 문장이 정확히 이백오십오 바이트 경계에서도 안전하게 처리된다.",
+    );
+    const line256 = buildExactByteRecord(
+      256,
+      "PLANNER_RESPONSE",
+      "한국어 사고 문장이 정확히 이백오십육 바이트 경계에서도 안전하게 처리된다.",
+    );
+    const line257Drifted = buildExactByteRecord(
+      257,
+      "PLANNER_RESPONSE",
+      "Now let me inspect the remaining files carefully before writing any output.",
+    );
+
+    // Put >256KB GENERIC first so the final 255/256/257B lines land in a partial trailing chunk (bytesRead < CHUNK_SIZE) without trailing newline.
+    const bigGeneric = JSON.stringify({ step_index: 0, type: "GENERIC", content: "G".repeat(270_000) });
+    writeFileSync(transcriptPath, `${bigGeneric}\n${line255}\n${line256}\n${line257Drifted}`, "utf8");
+
+    const result = handlePostInvocation(JSON.stringify({ hookEventName: "PostInvocation", transcriptPath }));
+    assert.equal(result.injectSteps.length, 1);
+    assert.ok(result.injectSteps[0].systemMessage.systemMessage.startsWith(DRIFT_MARKER));
+  });
+});
+
+describe("regression tests for analyzer, translation request, and verify-live summary", () => {
+  it("exempts short markdown headings and cited English principle titles inside Korean content while catching prose drift", () => {
+    // Exact #17 repro: Claude heavy-english-skill-tools Korean content with short English markdown heading
+    const claudeContentRepro = [
+      "문서 전체와 분석기 구현을 확인한 결과를 아래 항목별로 정리한다.",
+      "",
+      "### ③ Test Behavior, Not Implementation (+ Prove It Works)",
+      "내부 구현 세부 사항에 결합하지 않고 실제 드리프트 감지, 번역 요청 면제, 복구 시 백오프 초기화 같은 관찰 가능한 동작을 검증해야 한다.",
+      "또한 문법 검사, 엄격 매니페스트 검증, 실행 권한, 격리 라이브 실행까지 확인해 변경의 신뢰성을 보장한다.",
+    ].join("\n");
+    const claudeAnalysis = analyzeField("content", claudeContentRepro);
+    assert.equal(claudeAnalysis.status, "korean");
+    assert.equal(claudeAnalysis.driftReason, "none");
+
+    // 8-word English heading rule title inside Korean content must not trigger english_run or english_segment
+    const headingWithEightWords = [
+      "분석기 설계에서 특히 중요한 규칙을 정리한다.",
+      "",
+      "### 3. Prefer deterministic line scanners over fragile backtracking regexes",
+      "다중 줄 코드 펜스와 중첩 백틱은 정규식 대신 결정적 라인 스캐너로 처리해야 자연어 오삭제를 막을 수 있다.",
+    ].join("\n");
+    assert.equal(analyzeField("content", headingWithEightWords).status, "korean");
+
+    // Quoted, parenthetical, bold, and separator-listed English rule titles inside Korean explanations (Gemini ~90% Korean content style)
+    const geminiCitedTitlesContent = [
+      "문서 전체의 핵심 원칙과 분석기 구현 경계를 한국어로 상세하게 정리하면 다음과 같다.",
+      "결정적 라인 스캐너 우선(Prefer deterministic line scanners over fragile backtracking regexes) 규칙을 분석기에 적용하면 다중 줄 코드 펜스 처리에서 발생하는 역추적 위험을 효과적으로 줄일 수 있다.",
+      '문서의 "Prefer deterministic line scanners over fragile backtracking regexes" 규칙은 줄 단위 스캐너로 펜스 경계를 정확히 유지하도록 안내한다.',
+      "- **Prefer deterministic line scanners over fragile backtracking regexes**: 정규식 대신 줄 단위 스캐너를 사용해 안전하게 파싱한다.",
+      "- **Test Behavior, Not Implementation**: 내부 구현 세부가 아니라 외부에서 관찰 가능한 동작을 중심으로 검증한다.",
+      "핵심 원칙인 Boundary Discipline · Model the Domain · Guard the Context Window · Prove It Works를 분석기 검증 흐름에 차례로 적용해 경계 오류와 컨텍스트 오염을 함께 차단한다.",
+      "주요 원칙 Boundary Discipline / Model the Domain / Prove It Works를 단위 테스트와 격리 라이브 검증 설계에 모두 반영해 신뢰성을 확보했다.",
+    ].join("\n");
+    const geminiAnalysis = analyzeField("content", geminiCitedTitlesContent);
+    assert.equal(geminiAnalysis.status, "korean");
+    assert.equal(geminiAnalysis.driftReason, "none");
+
+    // Concise Korean bullet list citing English rule titles in bold/quotes/parentheses still passes when non-cited prose is Korean
+    const conciseRuleBullets = [
+      "- **Prefer deterministic line scanners over fragile backtracking regexes**: 정규식 대신 줄 단위 스캐너를 사용한다.",
+      '- "Separate user-facing verbatim requirements from internal reasoning hygiene" 원칙에 따라 내부 사고와 최종 출력의 표기 범위를 분리한다.',
+      "- 동작 중심 검증(Test Behavior, Not Implementation)을 기준으로 단위 테스트를 구성한다.",
+    ].join("\n");
+    assert.equal(analyzeField("content", conciseRuleBullets).status, "korean");
+
+    // Long prose heading (>100 chars) inside Korean content MUST still be flagged
+    const longProseHeading = [
+      "전체 구조를 한국어로 간단히 요약한 뒤 다음 섹션을 확인한다.",
+      "",
+      "## Now let me explain the entire architecture and implementation details in English without switching back to Korean anytime soon",
+      "추가 설명을 한국어로 이어서 정리한다.",
+    ].join("\n");
+    assert.equal(analyzeField("content", longProseHeading).status, "drifted");
+
+    // All-English document made only of short headings MUST still trigger document-wide low_hangul_ratio
+    const allEnglishHeadings = [
+      "# Boundary Discipline",
+      "## Model the Domain",
+      "### Test Behavior, Not Implementation",
+    ].join("\n");
+    const allHeadingsAnalysis = analyzeField("content", allEnglishHeadings);
+    assert.equal(allHeadingsAnalysis.status, "drifted");
+    assert.equal(allHeadingsAnalysis.driftReason, "low_hangul_ratio");
+
+    // Genuine 8+ word English prose runs inside high-Hangul Korean sentences (quoted, parenthetical) MUST still trigger english_run
+    const quotedProseRun =
+      '먼저 플러그인 전체 설정 파일과 전사 분석기 경계 조건을 차례대로 확인하며 한국어로 정리했다. 이어서 중간 메모를 남기면서 "Let me check the configuration file first and verify every module carefully." 라고 적은 뒤 최종 결과를 한국어로 보고하고 검증을 마무리한다.';
+    const quotedProseAnalysis = analyzeField("content", quotedProseRun);
+    assert.ok(quotedProseAnalysis.hangulRatio >= MIN_HANGUL_RATIO);
+    assert.equal(quotedProseAnalysis.status, "drifted");
+    assert.equal(quotedProseAnalysis.driftReason, "english_run");
+
+    const parenProseRun =
+      "먼저 플러그인 전체 설정 파일과 전사 분석기 경계 조건을 차례대로 확인하며 한국어로 정리했다. 이어서 보충 설명 (I will now check the remaining parser files carefully before editing.) 을 덧붙인 뒤 최종 결과를 한국어로 보고하고 검증을 마무리한다.";
+    const parenProseAnalysis = analyzeField("content", parenProseRun);
+    assert.ok(parenProseAnalysis.hangulRatio >= MIN_HANGUL_RATIO);
+    assert.equal(parenProseAnalysis.status, "drifted");
+    assert.equal(parenProseAnalysis.driftReason, "english_run");
+  });
+
+  it("strips fenced code blocks inside blockquotes without swallowing trailing English prose", () => {
+    // Exact #17 repro: ~33 Hangul chars + 8-line > ```js block
+    const quotedCodeRepro = [
+      "아래 인용된 자바스크립트 예시 코드의 핵심 동작만 한국어로 요약한다.",
+      "",
+      "> ```js",
+      "> function processItems(records) {",
+      ">   const normalized = records.filter(Boolean);",
+      ">   const mapped = normalized.map((entry) => entry.trim());",
+      ">   const unique = Array.from(new Set(mapped));",
+      ">   return unique.sort((a, b) => a.localeCompare(b));",
+      "> }",
+      "> ```",
+    ].join("\n");
+    const analysis = analyzeField("content", quotedCodeRepro);
+    assert.equal(analysis.latinCount, 0);
+    assert.equal(analysis.status, "korean");
+
+    // Nested blockquote fenced code block
+    const nestedQuotedCode = [
+      "중첩 인용구 내부의 코드 블록도 자연어 비율 계산에서 완전히 제외한다.",
+      "",
+      "> > ```ts",
+      "> > export const computeTotal = (values: number[]) => values.reduce((a, b) => a + b, 0);",
+      "> > ```",
+    ].join("\n");
+    assert.equal(analyzeField("content", nestedQuotedCode).status, "korean");
+
+    // Unclosed fence inside a blockquote MUST NOT swallow English prose outside the blockquote
+    const unclosedQuotedFence = [
+      "> ```js",
+      "> const onlyQuoted = true;",
+      "",
+      "Now let me continue explaining the remaining logic in English outside the blockquote.",
+    ].join("\n");
+    assert.equal(analyzeField("thinking", unclosedQuotedFence).status, "drifted");
+  });
+
+  it("bounds ERROR_QUOTE_RE length/openers and catches short English prose with 1-2 Hangul chars", () => {
+    // Generic prose openers must NOT be stripped as error quotes
+    const couldNotProse =
+      '"Could not decide whether to refactor the whole module right now because the tests are unclear."';
+    assert.equal(analyzeField("thinking", couldNotProse).status, "drifted");
+
+    const failedToSeeProse =
+      "> Failed to see why the previous logic should stay intact when a simpler parser exists.";
+    assert.equal(analyzeField("thinking", failedToSeeProse).status, "drifted");
+
+    // Overlong >180 char quote even starting with Error: or Failed to connect must NOT be stripped
+    const overlongErrorLikeProse =
+      '"Error: Failed to connect to the service, and now let me spend several extra clauses explaining the full architectural rationale in English so that the quote easily exceeds the one hundred eighty character limit."';
+    assert.ok(overlongErrorLikeProse.length > 180);
+    assert.equal(analyzeField("thinking", overlongErrorLikeProse).status, "drifted");
+
+    // Legitimate short error quotes still pass inside Korean text
+    const validShortErrors = [
+      '원문 오류 "Failed to connect to remote host"와 "Could not find module foo"를 확인했다.',
+      "> Unable to open file /etc/hosts",
+      "모든 오류 로그를 한국어로 분석해 원인을 정리했다.",
+    ].join("\n");
+    assert.equal(analyzeField("content", validShortErrors).status, "korean");
+
+    // 1-2 Hangul char prefix must NOT bypass short_english_prose
+    const oneHangulDrift = analyzeField("thinking", "네, I will check the file now.");
+    assert.equal(oneHangulDrift.status, "drifted");
+    assert.equal(oneHangulDrift.driftReason, "short_english_prose");
+
+    const twoHangulDrift = analyzeField("thinking", "확인, let me read this file now.");
+    assert.equal(twoHangulDrift.status, "drifted");
+    assert.equal(twoHangulDrift.driftReason, "short_english_prose");
+  });
+
+  it("accurately classifies all 9 #17 isExplicitEnglishOutputRequest cases plus edge cases", () => {
+    const expectedFalse = [
+      "이 문서는 영어로 작성되어 있어. 한국어로 요약해 줘",
+      "이 문서는 영어로 작성된 파일이야. 한국어로 분석해 줘",
+      "왜 자꾸 영어로 답변하는 거야?",
+      "방금 영어로 응답했잖아. 한국어로 고쳐 줘",
+      "영어로 출력되는 버그를 고쳐 줘",
+      "영어로 설명하면 안 돼. 한국어로 말해 줘",
+      "The agent kept trying to reply in English instead of Korean.",
+      "영어로 쓰지 마. 한국어로 써 줘.",
+      "영어로 답변 대신 한국어로 말해 줘",
+      "Stop replying in English.",
+      "Don't write in English.",
+      "Why did the agent reply in English?",
+    ];
+    for (const input of expectedFalse) {
+      assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
+    }
+
+    const expectedTrue = [
+      "이 문장을 영어로 해 줘",
+      "영어로 이메일 초안을 작성해 줘",
+      "영어로 설명해 주세요",
+      "영어로 요약 부탁해",
+      "영어로 답변을 원해",
+      "Could you explain this in English?",
+      "Do not use tools, translate this into English.",
+    ];
+    for (const input of expectedTrue) {
+      assert.equal(isExplicitEnglishOutputRequest(input), true, `Expected true for: ${input}`);
+    }
+  });
+
+  it("surfaces contentExemptionPassed honestly in verify-live summarizeTranscript for explicit-translation", () => {
+    const koreanThinking = "먼저 원문의 의미를 파악하고 자연스러운 번역 방향과 어휘를 순수 한국어로 구상한다.";
+    const englishThinking = "The user asked for a translation, so I just need to output the translated text.";
+    const englishTranslation =
+      "When designing retry policies in distributed systems, combine exponential backoff with jitter to prevent retry storms.";
+
+    // 1. Korean thinking + English content + 0 injections => pass + contentExemptionPassed: true
+    const passSummary = summarizeTranscript(
+      [
+        makeStep(0, "USER_INPUT", { content: "이 문단을 영어로 번역해 줘" }),
+        makeStep(1, "PLANNER_RESPONSE", { thinking: koreanThinking, content: englishTranslation }),
+      ],
+      { exemptContentDrift: true },
+    );
+    assert.equal(passSummary.status, "pass");
+    assert.equal(passSummary.contentExemptionPassed, true);
+    assert.equal(passSummary.contentDriftInjections, 0);
+    assert.equal(passSummary.plannerSteps[0].contentExempted, true);
+
+    // 2. English thinking + English content + thinking-only injection => drifted (honest!), contentExemptionPassed: true
+    const thinkingDriftedSummary = summarizeTranscript(
+      [
+        makeStep(0, "USER_INPUT", { content: "이 문단을 영어로 번역해 줘" }),
+        makeStep(1, "PLANNER_RESPONSE", { thinking: englishThinking, content: englishTranslation }),
+        makeStep(2, "SYSTEM_MESSAGE", {
+          content: wrapAntigravityHookMessage(buildCorrectionMessage(["thinking"])),
+        }),
+      ],
+      { exemptContentDrift: true },
+    );
+    assert.equal(thinkingDriftedSummary.status, "drifted");
+    assert.equal(thinkingDriftedSummary.contentExemptionPassed, true);
+    assert.equal(thinkingDriftedSummary.contentDriftInjections, 0);
+    assert.equal(thinkingDriftedSummary.driftInjections, 1);
+    assert.equal(thinkingDriftedSummary.plannerSteps[0].contentExempted, true);
+
+    // 3. Content drift injection during explicit-translation => error + contentExemptionPassed: false
+    const contentInjectedSummary = summarizeTranscript(
+      [
+        makeStep(0, "USER_INPUT", { content: "이 문단을 영어로 번역해 줘" }),
+        makeStep(1, "PLANNER_RESPONSE", { thinking: englishThinking, content: englishTranslation }),
+        makeStep(2, "SYSTEM_MESSAGE", {
+          content: wrapAntigravityHookMessage(buildCorrectionMessage(["thinking", "content"])),
+        }),
+      ],
+      { exemptContentDrift: true },
+    );
+    assert.equal(contentInjectedSummary.status, "error");
+    assert.equal(contentInjectedSummary.contentExemptionPassed, false);
+    assert.equal(contentInjectedSummary.contentDriftInjections, 1);
+    assert.equal(contentInjectedSummary.falsePositiveDriftInjection, true);
+
+    // 4. Non-exempt case omits contentExemptionPassed
+    const normalSummary = summarizeTranscript(
+      [makeStep(0, "PLANNER_RESPONSE", { thinking: koreanThinking, content: "한국어로 분석을 완료했다." })],
+      { exemptContentDrift: false },
+    );
+    assert.equal(normalSummary.status, "pass");
+    assert.equal("contentExemptionPassed" in normalSummary, false);
   });
 });

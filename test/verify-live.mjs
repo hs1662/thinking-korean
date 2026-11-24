@@ -504,6 +504,17 @@ function isDriftInjectionStep(step) {
   return [...markers].some((marker) => step.content.includes(marker));
 }
 
+function isContentDriftInjectionStep(step) {
+  if (!isDriftInjectionStep(step) || typeof step.content !== "string") {
+    return false;
+  }
+  return (
+    step.content.includes("최종 응답이") ||
+    step.content.includes("최종 응답도") ||
+    /\bdrifted\b[^.\n]*\bcontent\b|\bcontent\b[^.\n]*\bdrifted\b/i.test(step.content)
+  );
+}
+
 function roundRatio(value) {
   return Math.round(value * 10000) / 10000;
 }
@@ -522,6 +533,7 @@ function formatFieldResult(result) {
 export function summarizeTranscript(steps, testCase = {}) {
   const exemptContentDrift = Boolean(testCase.exemptContentDrift);
   let driftInjections = 0;
+  let contentDriftInjections = 0;
   let lastDriftInjectionPos = -1;
   let lastDriftedPlannerPos = -1;
   const plannerSteps = [];
@@ -530,6 +542,9 @@ export function summarizeTranscript(steps, testCase = {}) {
     const step = steps[pos];
     if (isDriftInjectionStep(step)) {
       driftInjections += 1;
+      if (isContentDriftInjectionStep(step)) {
+        contentDriftInjections += 1;
+      }
       lastDriftInjectionPos = pos;
       continue;
     }
@@ -586,6 +601,15 @@ export function summarizeTranscript(steps, testCase = {}) {
         step.kind === "ok",
     );
 
+  const hasFalsePositiveContentExemptionInjection =
+    exemptContentDrift &&
+    (contentDriftInjections > 0 || (driftedStepCount === 0 && driftInjections > 0));
+  const contentExemptionPassed = exemptContentDrift
+    ? plannerSteps.length > 0 &&
+      plannerSteps.every((step) => step.contentExempted === true) &&
+      !hasFalsePositiveContentExemptionInjection
+    : undefined;
+
   let status;
   let error = null;
   let falsePositiveDriftInjection = false;
@@ -593,10 +617,13 @@ export function summarizeTranscript(steps, testCase = {}) {
   if (plannerSteps.length === 0) {
     status = "error";
     error = "No PLANNER_RESPONSE steps found in transcript";
-  } else if (exemptContentDrift && driftedStepCount === 0 && driftInjections > 0) {
+  } else if (hasFalsePositiveContentExemptionInjection) {
     status = "error";
     falsePositiveDriftInjection = true;
-    error = `False-positive drift injection (${driftInjections}) triggered during explicit-translation case`;
+    error =
+      contentDriftInjections > 0
+        ? `False-positive content drift injection (${contentDriftInjections}) triggered during explicit-translation case`
+        : `False-positive drift injection (${driftInjections}) triggered during explicit-translation case`;
   } else if (driftedStepCount === 0) {
     status = koreanThinkingStepCount > 0 ? "pass" : "no_thinking";
   } else if (hasPostInjectionKoreanRecovery) {
@@ -618,6 +645,7 @@ export function summarizeTranscript(steps, testCase = {}) {
     totalThinkingHangulChars,
     totalThinkingNaturalChars,
     finalStepKind,
+    ...(exemptContentDrift ? { contentExemptionPassed, contentDriftInjections } : {}),
     ...(falsePositiveDriftInjection ? { falsePositiveDriftInjection: true } : {}),
     ...(error ? { error } : {}),
     plannerSteps: publicPlannerSteps,

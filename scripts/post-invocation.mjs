@@ -8,26 +8,113 @@ import { decideHookAction, parseTranscriptJsonl, parseTranscriptLine } from "./t
 const CHUNK_SIZE = 256 * 1024;
 const PREFIX_SCAN_BYTES = 256;
 const NEWLINE_BYTE = 0x0a;
-const INTERESTING_TYPE_BUFFERS = [
-  Buffer.from('"PLANNER_RESPONSE"'),
-  Buffer.from('"SYSTEM_MESSAGE"'),
-  Buffer.from('"USER_INPUT"'),
-];
-const TYPE_KEY_BUFFER = Buffer.from('"type"');
+const INTERESTING_TYPES = new Set(["PLANNER_RESPONSE", "SYSTEM_MESSAGE", "USER_INPUT"]);
+
+function isAsciiWhitespace(byte) {
+  return byte === 0x20 || byte === 0x09 || byte === 0x0d || byte === 0x0a;
+}
+
+function scanJsonStringEnd(buf, openQuoteIdx) {
+  const len = buf.length;
+  let hasEscape = false;
+  for (let i = openQuoteIdx + 1; i < len; i += 1) {
+    const b = buf[i];
+    if (b === 0x5c) {
+      hasEscape = true;
+      i += 1;
+      continue;
+    }
+    if (b === 0x22) {
+      return { end: i, hasEscape };
+    }
+  }
+  return null;
+}
 
 function classifyLinePrefix(prefixBuf) {
-  for (const needle of INTERESTING_TYPE_BUFFERS) {
-    if (prefixBuf.includes(needle)) {
-      return "keep";
-    }
+  const len = prefixBuf.length;
+  let i = 0;
+  while (i < len && isAsciiWhitespace(prefixBuf[i])) {
+    i += 1;
   }
-  const typePos = prefixBuf.indexOf(TYPE_KEY_BUFFER);
-  if (typePos !== -1) {
-    const afterKey = prefixBuf.subarray(typePos + TYPE_KEY_BUFFER.length).toString("latin1");
-    if (/^\s*:\s*"[^"]+"/.test(afterKey)) {
-      return "skip";
-    }
+  if (i >= len || prefixBuf[i] !== 0x7b) {
+    return "unknown";
   }
+
+  let depth = 0;
+  let expectKeyAtDepth1 = false;
+
+  while (i < len) {
+    const b = prefixBuf[i];
+    if (b === 0x22) {
+      const str = scanJsonStringEnd(prefixBuf, i);
+      if (!str) {
+        return "unknown";
+      }
+
+      if (depth === 1 && expectKeyAtDepth1) {
+        expectKeyAtDepth1 = false;
+        const keyStart = i + 1;
+        const keyLen = str.end - keyStart;
+        if (str.hasEscape) {
+          return "unknown";
+        }
+        const isTypeKey =
+          keyLen === 4 &&
+          prefixBuf[keyStart] === 0x74 &&
+          prefixBuf[keyStart + 1] === 0x79 &&
+          prefixBuf[keyStart + 2] === 0x70 &&
+          prefixBuf[keyStart + 3] === 0x65;
+
+        if (isTypeKey) {
+          let j = str.end + 1;
+          while (j < len && isAsciiWhitespace(prefixBuf[j])) {
+            j += 1;
+          }
+          if (j >= len || prefixBuf[j] !== 0x3a) {
+            return "unknown";
+          }
+          j += 1;
+          while (j < len && isAsciiWhitespace(prefixBuf[j])) {
+            j += 1;
+          }
+          if (j >= len || prefixBuf[j] !== 0x22) {
+            return "unknown";
+          }
+          const val = scanJsonStringEnd(prefixBuf, j);
+          if (!val || val.hasEscape) {
+            return "unknown";
+          }
+          const typeValue = prefixBuf.subarray(j + 1, val.end).toString("latin1");
+          return INTERESTING_TYPES.has(typeValue) ? "keep" : "skip";
+        }
+      }
+
+      i = str.end + 1;
+      continue;
+    }
+
+    if (b === 0x7b || b === 0x5b) {
+      depth += 1;
+      if (depth === 1 && b === 0x7b) {
+        expectKeyAtDepth1 = true;
+      }
+    } else if (b === 0x7d || b === 0x5d) {
+      depth -= 1;
+      if (depth <= 0) {
+        break;
+      }
+    } else if (depth === 1) {
+      if (b === 0x2c) {
+        expectKeyAtDepth1 = true;
+      } else if (b === 0x3a) {
+        expectKeyAtDepth1 = false;
+      }
+    }
+
+    i += 1;
+  }
+
   return "unknown";
 }
 
@@ -79,10 +166,11 @@ function readTranscriptStepsFast(filePath) {
       }
       totalBytes += bytesRead;
 
+      const view = chunk.subarray(0, bytesRead);
       let pos = 0;
       while (pos < bytesRead) {
-        const nlIdx = chunk.indexOf(NEWLINE_BYTE, pos);
-        const segEnd = nlIdx !== -1 && nlIdx < bytesRead ? nlIdx : bytesRead;
+        const nlIdx = view.indexOf(NEWLINE_BYTE, pos);
+        const segEnd = nlIdx !== -1 ? nlIdx : bytesRead;
 
         if (lineState === "skip") {
           pos = segEnd;
@@ -90,7 +178,7 @@ function readTranscriptStepsFast(filePath) {
           const remainingPrefix = PREFIX_SCAN_BYTES - prefixLen;
           const segLen = segEnd - pos;
           const copyLen = Math.min(remainingPrefix, segLen);
-          chunk.copy(prefixBuf, prefixLen, pos, pos + copyLen);
+          view.copy(prefixBuf, prefixLen, pos, pos + copyLen);
           prefixLen += copyLen;
           pos += copyLen;
 
@@ -101,7 +189,7 @@ function readTranscriptStepsFast(filePath) {
               pos = segEnd;
             } else {
               lineState = "keep";
-              lineChunks = [Buffer.from(prefixBuf), Buffer.from(chunk.subarray(pos, segEnd))];
+              lineChunks = [Buffer.from(prefixBuf), Buffer.from(view.subarray(pos, segEnd))];
               pos = segEnd;
             }
           } else if (prefixLen === PREFIX_SCAN_BYTES && nlIdx === -1) {
@@ -115,12 +203,12 @@ function readTranscriptStepsFast(filePath) {
           }
         } else {
           if (segEnd > pos) {
-            lineChunks.push(Buffer.from(chunk.subarray(pos, segEnd)));
+            lineChunks.push(Buffer.from(view.subarray(pos, segEnd)));
           }
           pos = segEnd;
         }
 
-        if (nlIdx !== -1 && nlIdx < bytesRead) {
+        if (nlIdx !== -1) {
           finalizeLine();
           pos = nlIdx + 1;
         }
