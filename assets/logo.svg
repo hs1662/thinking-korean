@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <linearGradient id="badge-bg" x1="26" y1="26" x2="230" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1E2438"/>
+      <stop offset="100%" stop-color="#2B3556"/>
+    </linearGradient>
+    <radialGradient id="spark-glow" cx="192" cy="62" r="68" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.22"/>
+      <stop offset="55%" stop-color="#FB923C" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#F59E0B" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bubble-fill" x1="56" y1="56" x2="200" y2="178" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F8FAFC" stop-opacity="0.11"/>
+      <stop offset="100%" stop-color="#F8FAFC" stop-opacity="0.03"/>
+    </linearGradient>
+    <linearGradient id="bubble-stroke" x1="56" y1="56" x2="200" y2="178" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8AA2DB" stop-opacity="0.65"/>
+      <stop offset="100%" stop-color="#5C73AA" stop-opacity="0.4"/>
+    </linearGradient>
+    <linearGradient id="accent-warm" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#FB923C"/>
+    </linearGradient>
+    <clipPath id="badge-clip">
+      <rect x="26" y="26" width="204" height="204" rx="44"/>
+    </clipPath>
+    <mask id="bubble-border-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect x="0" y="0" width="256" height="256" fill="#FFFFFF"/>
+      <path d="M 192 42 Q 194 60 212 62 Q 194 64 192 82 Q 190 64 172 62 Q 190 60 192 42 Z" fill="#000000" stroke="#000000" stroke-width="8" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+
+  <rect x="26" y="26" width="204" height="204" rx="44" fill="url(#badge-bg)" stroke="#4F6396" stroke-width="2.5"/>
+  <circle cx="192" cy="62" r="68" fill="url(#spark-glow)" clip-path="url(#badge-clip)"/>
+  <rect x="28" y="28" width="200" height="200" rx="42" stroke="#F8FAFC" stroke-opacity="0.08" stroke-width="1"/>
+
+  <rect x="56" y="56" width="144" height="122" rx="34" fill="url(#bubble-fill)"/>
+  <rect x="56" y="56" width="144" height="122" rx="34" stroke="url(#bubble-stroke)" stroke-width="2.5" mask="url(#bubble-border-mask)"/>
+
+  <circle cx="80" cy="194" r="8.5" fill="url(#accent-warm)"/>
+  <circle cx="61" cy="206" r="4.8" fill="url(#accent-warm)"/>
+
+  <rect x="112" y="72" width="32" height="11" rx="5.5" fill="#F8FAFC"/>
+  <rect x="86" y="92" width="84" height="11" rx="5.5" fill="#F8FAFC"/>
+  <circle cx="128" cy="137" r="20" stroke="#F8FAFC" stroke-width="11"/>
+
+  <path d="M 192 42 Q 194 60 212 62 Q 194 64 192 82 Q 190 64 172 62 Q 190 60 192 42 Z" fill="url(#accent-warm)"/>
+  <circle cx="209" cy="84" r="3.5" fill="#FB923C"/>
+</svg>
