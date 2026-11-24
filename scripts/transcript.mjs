@@ -240,18 +240,18 @@ export function buildCorrectionMessage(driftedFields = []) {
   const hasContent = fields.includes("content");
 
   if (hasThinking && hasContent) {
-    return `${DRIFT_MARKER} 직전 내부 추론·사고 요약과 최종 응답이 모두 영어로 작성되었다. 내부 사고에 영문 식별자·파일명·영어 단어가 섞이면 사고 요약 전체가 영어로 전환된다. 다음 단계부터는 내부 추론 속에 영문 알파벳을 단 한 글자도 쓰지 말고 파일명·함수명·원칙명까지 모두 순수 한국어 뜻이나 한글 음차로 바꿔서 생각하며, 최종 사용자 응답의 모든 설명 문장도 처음부터 끝까지 한국어로 작성하라. 영문 원문과 식별자는 오직 도구 호출 인자와 최종 답변의 코드·경로·식별자·오류 인용에서만 사용하라.`;
+    return `${DRIFT_MARKER} 직전 내부 추론·생각 요약과 최종 응답이 모두 영어로 작성되었다. 다음 단계부터는 예외 없이 모든 추론 문단의 첫 문장(마지막 정리 문단 포함)에 "이 추론과 생각 요약은 반드시 한국어로만 작성한다."를 직접 적고 전체 추론을 6에서 8문단 이내의 간결한 한국어 문단으로 압축해 생각하라. 최종 사용자 응답도 한국어로 자연스럽게 대화하듯 작성하되 필요한 파일명, 식별자, 고유명사, 기술 영어 단어만 최소한으로 섞고 영어 문장은 절대 쓰지 마라.`;
   }
 
   if (hasContent) {
-    return `${DRIFT_MARKER} 직전 최종 응답이 영어로 작성되었다. 다음 단계부터는 사용자에게 전달하는 최종 응답의 모든 설명 문장을 처음부터 끝까지 한국어로 작성하고, 내부 추론과 사고 요약에도 영문 알파벳을 섞지 말고 순수 한국어로만 생각하라. 코드·파일 경로·식별자·명령어·원문 오류 로그만 도구 호출 인자와 최종 답변에서 원문을 유지하라.`;
+    return `${DRIFT_MARKER} 직전 최종 응답이 영어로 작성되었다. 다음 단계부터는 사용자와 한국어로 직접 대화하듯 최종 응답의 모든 설명을 자연스러운 한국어 문장으로 작성하고, 내부 추론도 모든 문단 첫 문장에 "이 추론과 생각 요약은 반드시 한국어로만 작성한다."를 넣어 간결하게 유지하라. 필요한 코드, 경로, 식별자, 명령어, 고유명사와 기술 영어 단어만 자연스럽게 원문을 유지하라.`;
   }
 
   if (hasThinking) {
-    return `${DRIFT_MARKER} 직전 내부 추론과 사고 요약이 영어로 작성되었다. 내부 사고에 영문 식별자·파일명·영어 단어가 섞이면 사고 요약 전체가 영어로 전환된다. 다음 단계부터는 내부 추론 속에 영문 알파벳을 단 한 글자도 쓰지 말고 파일명·함수명·원칙명까지 모두 순수 한국어 뜻이나 한글 음차로 바꿔서 생각하라. 영문 원문과 식별자는 오직 도구 호출 인자와 최종 답변에서만 사용하라.`;
+    return `${DRIFT_MARKER} 직전 내부 추론과 생각 요약이 영어로 작성되었다. 다음 단계부터는 예외 없이 모든 추론 문단의 첫 문장(마지막 정리 문단 포함)에 "이 추론과 생각 요약은 반드시 한국어로만 작성한다."를 직접 적고 전체 추론을 6에서 8문단 이내의 간결한 한국어 문단으로 압축해 생각하라. 추론 안에 영어 예시 문장을 직접 인용하거나 영문 식별자를 줄줄이 나열하지 말고 꼭 필요한 이름만 자연스럽게 섞으며 영어 문장이나 영어 절은 절대 쓰지 마라.`;
   }
 
-  return `${DRIFT_MARKER} 직전 단계에서 영어 이탈이 감지되었다. 다음 단계부터는 내부 추론과 사고 요약에 영문 알파벳을 단 한 글자도 쓰지 말고 순수 한국어 뜻이나 한글 음차로 생각하며, 최종 응답도 처음부터 끝까지 한국어로 작성하라. 영문 원문과 식별자는 오직 도구 호출 인자와 최종 답변의 코드·경로·식별자·오류 인용에서만 사용하라.`;
+  return `${DRIFT_MARKER} 직전 단계에서 영어 이탈이 감지되었다. 다음 단계부터는 모든 추론 문단의 첫 문장에 "이 추론과 생각 요약은 반드시 한국어로만 작성한다."를 직접 적고 간결한 한국어 문단으로 생각하며, 최종 응답도 자연스러운 한국어 문장으로 작성하라.`;
 }
 
 function createFieldTracker() {
@@ -457,4 +457,99 @@ export function decideHookAction(steps, options = {}) {
     driftedFields: actionableFields,
     message: buildCorrectionMessage(actionableFields),
   };
+}
+
+export function decideStopAction(steps, options = {}) {
+  const {
+    lastUserInput,
+    continuationActive = false,
+    terminationReason = "",
+    ...analyzerOptions
+  } = options;
+
+  if (continuationActive === true) {
+    return { action: "noop", reason: "continuation_active" };
+  }
+
+  if (terminationReason !== "NO_TOOL_CALL") {
+    return { action: "noop", reason: "non_normal_termination" };
+  }
+
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return { action: "noop", reason: "no_planner_response" };
+  }
+
+  let currentContentExempt = false;
+  let latestPlannerIndex = -1;
+  let latestPlannerStep = null;
+  let latestPlannerContentExempt = false;
+  let lastMarkerIndex = -1;
+  let sawMarkerInCurrentTurn = false;
+  let plannersAfterTurnMarker = 0;
+
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i];
+    if (!step || typeof step !== "object") {
+      continue;
+    }
+
+    if (step.type === "USER_INPUT") {
+      currentContentExempt = isExplicitEnglishOutputRequest(step.content);
+      sawMarkerInCurrentTurn = false;
+      plannersAfterTurnMarker = 0;
+      continue;
+    }
+
+    if (isDriftMarkerStep(step)) {
+      lastMarkerIndex = i;
+      sawMarkerInCurrentTurn = true;
+      continue;
+    }
+
+    if (step.type === "PLANNER_RESPONSE") {
+      latestPlannerIndex = i;
+      latestPlannerStep = step;
+      latestPlannerContentExempt = currentContentExempt;
+      if (sawMarkerInCurrentTurn) {
+        plannersAfterTurnMarker += 1;
+      }
+    }
+  }
+
+  if (!latestPlannerStep) {
+    return { action: "noop", reason: "no_planner_response" };
+  }
+
+  if (plannersAfterTurnMarker >= 1) {
+    return { action: "noop", reason: "stop_retry_cap_reached" };
+  }
+
+  const finalContentExempt =
+    typeof lastUserInput === "string" && lastUserInput.trim().length > 0
+      ? isExplicitEnglishOutputRequest(lastUserInput)
+      : latestPlannerContentExempt;
+
+  if (finalContentExempt) {
+    return { action: "noop", reason: "content_exempt" };
+  }
+
+  const evaluation = evaluatePlannerResponse(
+    {
+      thinking: "",
+      content: typeof latestPlannerStep.content === "string" ? latestPlannerStep.content : "",
+    },
+    analyzerOptions,
+  );
+
+  if (evaluation.content.status === "drifted") {
+    const alreadyCoveredByPostHook = lastMarkerIndex > latestPlannerIndex;
+    return {
+      action: "continue",
+      stepIndex: latestPlannerStep.stepIndex,
+      alreadyCoveredByPostHook,
+      reasonMessage: alreadyCoveredByPostHook ? "" : buildCorrectionMessage(["content"]),
+    };
+  }
+
+  return { action: "noop", reason: "ok" };
 }

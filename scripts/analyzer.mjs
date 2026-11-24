@@ -14,6 +14,10 @@ const MAX_CITED_TITLE_CHARS = 90;
 const MAX_CITED_TITLE_WORDS = 10;
 const SHORT_ENGLISH_PROSE_MAX_HANGUL = 2;
 const SHORT_ENGLISH_PROSE_MAX_HANGUL_RATIO = 0.15;
+const KOREAN_LINE_MIN_HANGUL = 6;
+const KOREAN_LINE_MIN_TOKENS = 2;
+const MAX_EMBEDDED_TERM_WORDS = 3;
+const PROSE_FALLBACK_MIN_HANGUL = 12;
 
 const CLI_UI_HINT_LINE_RE =
   /^[ \t]*(?:[-*][ \t]+)?(?:Run|Use|Type)\s+`?\/[a-z][a-z0-9_-]*(?:[ \t]+[a-z0-9_-]+){0,3}`?[ \t]*\([^)\n]{1,40}\)[ \t]*(?:to[ \t]+[^\n]{1,60})?$/gim;
@@ -106,10 +110,116 @@ const UPPER_PROSE_STOPWORDS = new Set([
   "YOUR",
 ]);
 
+const ENGLISH_PROSE_FUNCTION_WORDS = new Set([
+  "i",
+  "me",
+  "you",
+  "we",
+  "they",
+  "them",
+  "he",
+  "him",
+  "she",
+  "her",
+  "his",
+  "it",
+  "its",
+  "this",
+  "that",
+  "these",
+  "those",
+  "my",
+  "your",
+  "our",
+  "their",
+  "am",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "being",
+  "will",
+  "would",
+  "shall",
+  "should",
+  "can",
+  "could",
+  "may",
+  "might",
+  "must",
+  "do",
+  "does",
+  "did",
+  "have",
+  "has",
+  "had",
+  "not",
+  "the",
+  "a",
+  "an",
+  "let",
+  "please",
+  "because",
+  "although",
+  "however",
+  "therefore",
+  "while",
+  "before",
+  "after",
+  "then",
+  "since",
+  "unless",
+  "until",
+  "if",
+  "when",
+  "where",
+  "why",
+  "how",
+  "what",
+  "who",
+  "here",
+  "there",
+  "now",
+  "so",
+  "but",
+  "wait",
+  "okay",
+  "ok",
+  "sorry",
+  "thank",
+  "thanks",
+  "and",
+  "or",
+  "in",
+  "on",
+  "at",
+  "to",
+  "of",
+  "for",
+  "from",
+  "with",
+  "by",
+  "as",
+  "into",
+  "all",
+  "about",
+  "over",
+  "under",
+  "between",
+  "through",
+  "without",
+]);
+
 const HANGUL_RE = /[\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]/g;
+const HANGUL_TOKEN_RE = /[\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+/g;
 const HAS_HANGUL_RE = /[\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]/;
 const LATIN_RE = /[A-Za-z]/g;
 const ENGLISH_WORD_RE = /[A-Za-z]+(?:['’-][A-Za-z]+)*/g;
+const EMBEDDED_LATIN_SPAN_RE =
+  /[A-Za-z]+(?:['’-][A-Za-z]+)*(?:(?:[ \t]+|[.!?][ \t]+|,[ \t]*)[A-Za-z]+(?:['’-][A-Za-z]+)*)*/g;
+const ENGLISH_CONTRACTION_RE = /(?:n['’]t|['’](?:m|re|ve|ll|d))$/i;
 const PROSE_TOKEN_RE = /[\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+|[A-Za-z]+(?:['’-][A-Za-z]+)*/g;
 const TABLE_SEPARATOR_LINE_RE = /^[ \t]*\|?(?:[ \t]*:?-{2,}:?[ \t]*\|)+[ \t]*:?-{2,}:?[ \t]*\|?[ \t]*$/;
 const BULLET_PREFIX_RE = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/;
@@ -167,6 +277,87 @@ function stripShortCitedTitlesOnKoreanLine(line) {
     cleaned = next;
   }
   return cleaned;
+}
+
+function isKoreanSentenceLine(line) {
+  return (
+    countMatches(line, HANGUL_RE) >= KOREAN_LINE_MIN_HANGUL &&
+    countMatches(line, HANGUL_TOKEN_RE) >= KOREAN_LINE_MIN_TOKENS
+  );
+}
+
+function hasEnglishProseFunctionWord(words) {
+  return words.some((word) => {
+    if (ENGLISH_CONTRACTION_RE.test(word)) {
+      return true;
+    }
+    const parts = word.toLowerCase().split(/['’]/);
+    return parts.some((part) => ENGLISH_PROSE_FUNCTION_WORDS.has(part));
+  });
+}
+
+function isStandaloneEnglishSentenceSpan(line, offset, matchLength, wordCount) {
+  if (wordCount < 2) {
+    return false;
+  }
+  const before = line.slice(0, offset).trimEnd();
+  const after = line.slice(offset + matchLength).trimStart();
+  const startsSentence = before.length === 0 || /[.!?]$/.test(before);
+  const endsSentence = /^[.!?]/.test(after);
+  return startsSentence && endsSentence;
+}
+
+function stripEmbeddedTermsOnKoreanLine(line) {
+  if (!isKoreanSentenceLine(line)) {
+    return line;
+  }
+  return line.replace(EMBEDDED_LATIN_SPAN_RE, (span, offset) => {
+    if (/[.!?]/.test(span)) {
+      return span;
+    }
+    const allWords = span.match(ENGLISH_WORD_RE) ?? [];
+    if (allWords.length === 0) {
+      return span;
+    }
+    if (isStandaloneEnglishSentenceSpan(line, offset, span.length, allWords.length)) {
+      return span;
+    }
+    const parts = span.split(/,[ \t]*/).filter(Boolean);
+    if (parts.length > 1) {
+      const partWordLists = parts.map((part) => part.match(ENGLISH_WORD_RE) ?? []);
+      const multiWordParts = partWordLists.filter((words) => words.length >= 2).length;
+      if (multiWordParts >= 2 && allWords.length >= 6) {
+        return span;
+      }
+      for (let i = 0; i < parts.length; i += 1) {
+        const part = parts[i];
+        const words = partWordLists[i];
+        if (
+          words.length === 0 ||
+          words.length > MAX_EMBEDDED_TERM_WORDS ||
+          PROSE_OPENER_RE.test(part) ||
+          hasEnglishProseFunctionWord(words)
+        ) {
+          return span;
+        }
+      }
+      return " ";
+    }
+    if (allWords.length > MAX_EMBEDDED_TERM_WORDS) {
+      return span;
+    }
+    if (PROSE_OPENER_RE.test(span)) {
+      return span;
+    }
+    if (hasEnglishProseFunctionWord(allWords)) {
+      return span;
+    }
+    return " ";
+  });
+}
+
+function stripKoreanLineNonProse(line) {
+  return stripEmbeddedTermsOnKoreanLine(stripShortCitedTitlesOnKoreanLine(line));
 }
 
 function isShortEnglishProseMetrics(metrics) {
@@ -419,7 +610,7 @@ function hasDriftedSegment(
     const proseLines = paragraph
       .split("\n")
       .filter((line) => !isStructuredNonProseLine(line))
-      .map(stripShortCitedTitlesOnKoreanLine);
+      .map(stripKoreanLineNonProse);
     if (proseLines.length === 0) {
       continue;
     }
@@ -438,7 +629,7 @@ function hasDriftedSegment(
     if (isStructuredNonProseLine(line)) {
       continue;
     }
-    const evalLine = stripShortCitedTitlesOnKoreanLine(line);
+    const evalLine = stripKoreanLineNonProse(line);
     const metrics = measureLanguage(evalLine);
     if (
       metrics.naturalCharCount >= segmentMinNaturalChars &&
@@ -574,11 +765,24 @@ export function analyzeField(field, rawText, options = {}) {
 
   if (metrics.naturalCharCount < minNaturalChars) {
     if (
-      isShortEnglishProseMetrics(metrics) &&
       metrics.latinCount >= minLatinCharsForDrift &&
       countNonStructuredEnglishWords(naturalText) >= shortEnglishProseWordThreshold
     ) {
-      return { ...base, status: "drifted", driftReason: "short_english_prose" };
+      if (isShortEnglishProseMetrics(metrics)) {
+        return { ...base, status: "drifted", driftReason: "short_english_prose" };
+      }
+      const proseLines = naturalText
+        .split("\n")
+        .filter((line) => !isStructuredNonProseLine(line))
+        .map(stripKoreanLineNonProse);
+      const proseText = proseLines.join("\n");
+      const proseMetrics = measureLanguage(proseText);
+      if (
+        proseMetrics.latinCount >= minLatinCharsForDrift &&
+        countEnglishWords(proseText) >= shortEnglishProseWordThreshold
+      ) {
+        return { ...base, status: "drifted", driftReason: "short_english_prose" };
+      }
     }
     return { ...base, status: "insufficient", driftReason: "none" };
   }
@@ -591,12 +795,14 @@ export function analyzeField(field, rawText, options = {}) {
     const proseLines = naturalText
       .split("\n")
       .filter((line) => !isStructuredNonProseLine(line))
-      .map(stripShortCitedTitlesOnKoreanLine);
+      .map(stripKoreanLineNonProse);
     const proseMetrics = proseLines.length > 0 ? measureLanguage(proseLines.join("\n")) : null;
     const proseIsKorean =
       proseMetrics !== null &&
-      proseMetrics.hangulCount >= minNaturalChars &&
-      proseMetrics.hangulRatio >= minHangulRatio;
+      proseMetrics.hangulRatio >= minHangulRatio &&
+      (proseMetrics.hangulCount >= minNaturalChars ||
+        (proseMetrics.hangulCount >= PROSE_FALLBACK_MIN_HANGUL &&
+          proseMetrics.latinCount < minLatinCharsForDrift));
     if (!proseIsKorean) {
       return { ...base, status: "drifted", driftReason: "low_hangul_ratio" };
     }

@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-`thinking-korean` keeps Antigravity CLI `thinking` traces and responses in Korean with an always-on pure-Korean thinking rule and a `PostInvocation` drift-recovery hook. It requires Node.js 18 or newer and has zero npm dependencies.
+`thinking-korean` keeps Antigravity CLI `thinking` traces and responses in natural conversational Korean with an always-on Korean rule plus `PostInvocation` and `Stop` drift-recovery hooks. It requires Node.js 18 or newer and has zero npm dependencies.
 
 ## Install
 
@@ -24,22 +24,23 @@ agy plugin enable thinking-korean
 
 ## How it works
 
-The plugin pairs one always-on rule file with one `PostInvocation` hook script.
+The plugin pairs one always-on rule file with two lifecycle hooks (`PostInvocation` and `Stop`).
 
-- `rules/AGENTS.md` loads into `<user_rules>` as a pure-Korean rule that separates internal reasoning from final output. Inside internal thinking and thought summaries, English letters are banned (`No-ASCII-in-CoT`); file names, paths, identifiers, and technical terms are translated or transliterated into Korean so server-side thought summarizers stay in Korean. Exact original code blocks, inline code, file paths, URLs, identifiers, CLI flags, verbatim error logs, and explicit translation targets remain verbatim only in tool call arguments and final user responses.
-- `hooks.json` runs `scripts/post-invocation.mjs` on `PostInvocation` (after model invocation and tool execution complete) to scan `transcript_full.jsonl` and inspect the latest `PLANNER_RESPONSE`. When English drift appears, it injects a non-blocking pure-Korean `[한국어사고:영어이탈]` `systemMessage` with stateless recovery-aware backoff:
+- `rules/AGENTS.md` loads into `<user_rules>` as a Korean-only rule file. It tells the model to think and reply in natural conversational Korean sentences, as if talking directly with the user. It puts an explicit Korean summary-language declaration at the start of every reasoning paragraph and keeps reasoning concise (6 to 8 paragraphs, 3 to 4 sentences each) so server-side thought summarizers stay in Korean across every chunk. File names, paths, code identifiers, commands, proper nouns, and everyday English technical terms stay natural inside Korean sentences without forced transliteration, while English sentences, clauses, and paragraphs are disallowed.
+- `PostInvocation` in `hooks.json` runs `scripts/post-invocation.mjs` after model invocation and tool execution complete to scan `transcript_full.jsonl` and inspect the latest `PLANNER_RESPONSE`. The analyzer (`scripts/analyzer.mjs`) permits embedded 1-to-3-word non-prose English technical terms inside Korean sentences alongside code, paths, and identifiers, while catching English sentences, contractions, 4-plus-word English runs, and English paragraphs. When drift appears, the hook injects a non-blocking Korean `[한국어사고:영어이탈]` `systemMessage` with stateless recovery-aware backoff:
   - Recovery resets failure counts and cooldown immediately.
   - Persistent `thinking`-only drift backs off and stops after a consecutive-failure cap (`2` unrecovered injections) until Korean `thinking` resumes, preventing infinite context pollution on stubborn models or summarizers.
   - User-facing `content` drift uses an independent budget, and explicit English or translation requests in `USER_INPUT` exempt `content` while keeping `thinking` in Korean.
-  - On read, parse, or event errors, the hook fails open with `{}`.
+- `Stop` in `hooks.json` runs `scripts/stop.mjs` before a normal `NO_TOOL_CALL` turn ends. If final user `content` drifted into English without an explicit English or translation request, it returns `decision: "continue"` once to recover the response in Korean. It passes through when `continuationActive` is true, when termination is abnormal, or when `content` is already Korean.
+- Both hooks fail open with `{}` on read, parse, or event errors.
 
 ## Model behavior
 
 Plugins cannot rewrite tokens already streamed or set a provider thought-language parameter, so hook recovery takes effect on the next model call. Isolated live runs measured these results:
 
-- `claude-opus-5-5-high` mostly stays in Korean on reasoning and code-analysis turns, though occasional single-step English thinking drift still occurs probabilistically. On heavy English skill and code tool turns where mid-turn drift occurs, it consistently recovers to `100%` Korean thinking (`0` Latin letters) after a single pure-Korean `PostInvocation` hook injection.
-- `gemini-4-neon-xhigh` improves markedly with pure-Korean CoT separation (`No-ASCII-in-CoT`) and the pure-Korean `PostInvocation` hook: controlled heavy-English multi-step benchmarks rose from `8.3%` Korean thinking steps (`0.1515` average Hangul ratio) under the previous identifier-allowing rule to `62.5%` (`0.7414` average Hangul ratio), and isolated `tool-code-analysis` runs recovered from `0.00` to `1.00` (`2006` Hangul / `0` Latin chars) after one hook injection. Because Gemini's server-side thought summarizer remains probabilistic under heavy English context, the `thinking`-only consecutive-failure cap (`2`) stops futile repeated injections when a turn does not recover.
-- `gemini-4-carbon-high` and `gemini-3.8-flash-high` reach `90%` to `100%` Korean thinking on pure reasoning, with the same server-side summarizer variability on English-heavy tool turns.
+- `gemini-4-neon-xhigh` passed all 4 isolated cases (`korean-reasoning`, `tool-code-analysis`, `heavy-english-skill-tools`, and `explicit-translation`) across two consecutive runs on the final code with zero hook injections and `100.0%` Hangul thinking on every step (`84.8%` to `96.2%` Korean content, translation exemption passed), while keeping identifiers such as `src/analyzer.mjs`, `docs/SKILL.md`, and `analyzeField` verbatim.
+- `gemini-3.8-flash-high` also passed all 4 isolated cases across two consecutive runs on the final code with zero hook injections and `97.4%` to `100.0%` weighted Hangul thinking (`80.1%` to `99.2%` Korean content, translation exemption passed).
+- `claude-opus-5-5-high` passed `korean-reasoning` (`94.0%` Hangul thinking, `92.9%` content) and `tool-code-analysis` (`91.1%` Hangul thinking, `94.5%` content) with zero hook injections under the prior natural Korean rule revision; live re-verification against the final every-paragraph lock rule and `Stop` hook is pending quota reset (`429`).
 - `gpt-oss-120b-medium` keeps most internal thinking in English; the `thinking`-only cap avoids repeated context pollution.
 
 ## Verify

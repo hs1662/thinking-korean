@@ -851,6 +851,6 @@ function main() {
   }
 }
 
-if (isDirectExecution()) {
+if (isDirectExecution() && !process.env.NODE_TEST_CONTEXT) {
   main();
 }

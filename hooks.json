@@ -6,6 +6,13 @@
         "command": "node ./scripts/post-invocation.mjs",
         "timeout": 5
       }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./scripts/stop.mjs",
+        "timeout": 5
+      }
     ]
   }
 }

@@ -232,7 +232,7 @@ function resolveTranscriptCandidates(transcriptPath) {
   return [transcriptPath];
 }
 
-function readTranscriptSteps(transcriptPath, readTextFile) {
+export function readTranscriptSteps(transcriptPath, readTextFile) {
   for (const candidatePath of resolveTranscriptCandidates(transcriptPath)) {
     try {
       if (typeof readTextFile === "function") {

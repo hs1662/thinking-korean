@@ -19,6 +19,7 @@ import {
   extractNaturalText,
 } from "../scripts/analyzer.mjs";
 import { handlePostInvocation } from "../scripts/post-invocation.mjs";
+import { handleStop } from "../scripts/stop.mjs";
 import {
   DEFAULT_COOLDOWN_INVOCATIONS,
   DRIFT_MARKER,
@@ -26,6 +27,7 @@ import {
   MAX_CONSECUTIVE_FAILED_THINKING,
   buildCorrectionMessage,
   decideHookAction,
+  decideStopAction,
   isDriftMarkerStep,
   isExplicitEnglishOutputRequest,
   parseTranscriptJsonl,
@@ -35,6 +37,7 @@ import { summarizeTranscript } from "./verify-live.mjs";
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(TEST_DIR, "..");
 const HOOK_SCRIPT = join(PLUGIN_ROOT, "scripts", "post-invocation.mjs");
+const STOP_HOOK_SCRIPT = join(PLUGIN_ROOT, "scripts", "stop.mjs");
 const RULES_PATH = join(PLUGIN_ROOT, "rules", "AGENTS.md");
 
 function makeStep(stepIndex, type, { thinking = "", content = "" } = {}) {
@@ -62,6 +65,11 @@ describe("rules", () => {
     assert.ok(rulesText.length > 200);
     assert.ok(Buffer.byteLength(rulesText, "utf8") < 20_000);
     assert.equal(/[A-Za-z]/.test(rulesText), false, "rules/AGENTS.md must not contain ASCII letters");
+    assert.equal(rulesText.includes("영문 알파벳을 단 한 글자도 쓰지 말고"), false);
+    assert.equal(rulesText.includes("반드시 한국어 뜻이나 한글 음차로 바꿔서"), false);
+    assert.ok(rulesText.includes("자연스러운 한국어"));
+    assert.ok(rulesText.includes("이 추론과 생각 요약은 반드시 한국어로만 작성한다."));
+    assert.ok(rulesText.includes("영어 문장"));
   });
 });
 
@@ -400,6 +408,52 @@ describe("analyzer", () => {
       content: "",
     });
     assert.equal(evaluation.kind, "ok");
+  });
+
+  it("passes natural Korean conversational sentences with embedded English words and technical terms", () => {
+    const naturalKoreanSamples = [
+      "지금 docker랑 postgres memory, disk, port 상태 체크하고 log랑 config 확인해 보자.",
+      "이 PR은 cache랑 timeout 처리만 고치면 되고, lint랑 test 돌려서 pass 확인하자.",
+      "이 컴포넌트는 dark mode랑 responsive layout 지원하고, hover state랑 focus ring 스타일만 맞추면 돼.",
+      "원인 보니까 retry backoff랑 token budget 계산에서 race condition이 나서 stale cache가 남았어.",
+      [
+        "먼저 docker랑 postgres 상태 확인하고 memory, disk, port 설정을 체크해 보자.",
+        "그다음 retry backoff랑 token budget 로직만 다듬어서 lint랑 test pass까지 보면 깔끔할 거야.",
+      ].join("\n"),
+    ];
+
+    for (const sample of naturalKoreanSamples) {
+      const thinkingAnalysis = analyzeField("thinking", sample);
+      assert.equal(thinkingAnalysis.status, "korean", `expected thinking korean for: ${sample}`);
+      assert.equal(thinkingAnalysis.driftReason, "none");
+
+      const contentAnalysis = analyzeField("content", sample);
+      assert.equal(contentAnalysis.status, "korean", `expected content korean for: ${sample}`);
+      assert.equal(contentAnalysis.driftReason, "none");
+    }
+  });
+
+  it("still catches genuine English clauses, contractions, and 4+ word runs mixed into Korean lines", () => {
+    const mixedDriftSamples = [
+      "먼저 확인했다. Let me check this file before proceeding.",
+      "먼저 확인했다. I'll fix it. 그다음 배포한다. It works now.",
+      "먼저 로그를 확인했다. We can't skip this step. 그다음 정리한다. Don't ignore it.",
+      "먼저 구조를 정리하고 Wait, let me check, then update the parser, and run tests. 마무리한다.",
+      "먼저 구조를 확인하고 apple banana orange grape 정리한다.",
+      "먼저 구조를 확인하고 apple banana orange grape peach melon lemon mango 정리한다.",
+      "먼저 확인했다. Fix bug. Deploy build. Verify pass. 이제 끝낸다.",
+      "먼저 확인했다. Fix parser bug. 그다음 배포한다. Run unit tests.",
+      "먼저 확인했다. fix for bug와 works on server 쪽 체크해 보자.",
+      "확인했음. Let me check the file.",
+      "확인했습니다. Let me check this now.",
+      "이 추론과 생각 요약은 반드시 한국어로만 작성한다. Checking parser output, verifying regex logic, running tests quickly, comparing results carefully, fixing edge cases.",
+      "먼저 확인했다. Checking parser output, verifying regex logic, running tests quickly 정리한다.",
+    ];
+
+    for (const sample of mixedDriftSamples) {
+      const analysis = analyzeField("thinking", sample);
+      assert.equal(analysis.status, "drifted", `expected drifted for: ${sample}`);
+    }
   });
 });
 
@@ -761,15 +815,18 @@ describe("transcript reducer", () => {
     for (const msg of [thinkingOnly, contentOnly, both, fallback]) {
       assert.ok(msg.startsWith(DRIFT_MARKER));
       assert.equal(/[A-Za-z]/.test(msg), false, `Correction message must be pure Korean: ${msg}`);
+      assert.equal(msg.includes("영문 알파벳을 단 한 글자도 쓰지 말고"), false);
+      assert.equal(msg.includes("한글 음차"), false);
+      assert.ok(msg.includes("이 추론과 생각 요약은 반드시 한국어로만 작성한다."));
     }
 
-    assert.ok(thinkingOnly.includes("직전 내부 추론과 사고 요약이 영어로 작성되었다."));
+    assert.ok(thinkingOnly.includes("직전 내부 추론과 생각 요약이 영어로 작성되었다."));
     assert.equal(thinkingOnly.includes("직전 최종 응답이 영어로 작성되었다."), false);
 
     assert.ok(contentOnly.includes("직전 최종 응답이 영어로 작성되었다."));
-    assert.equal(contentOnly.includes("직전 내부 추론과 사고 요약이 영어로 작성되었다."), false);
+    assert.equal(contentOnly.includes("직전 내부 추론과 생각 요약이 영어로 작성되었다."), false);
 
-    assert.ok(both.includes("직전 내부 추론·사고 요약과 최종 응답이 모두 영어로 작성되었다."));
+    assert.ok(both.includes("직전 내부 추론·생각 요약과 최종 응답이 모두 영어로 작성되었다."));
     assert.ok(fallback.includes("영어 이탈이 감지되었다."));
   });
 });
@@ -1349,5 +1406,296 @@ describe("regression tests for analyzer, translation request, and verify-live su
     );
     assert.equal(normalSummary.status, "pass");
     assert.equal("contentExemptionPassed" in normalSummary, false);
+  });
+});
+
+describe("stop hook decision, adapter, and CLI", () => {
+  const tempDirs = [];
+
+  function createTempDir() {
+    const dir = mkdtempSync(join(tmpdir(), "thinking-korean-stop-test-"));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  after(() => {
+    for (const dir of tempDirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("requests continuation with pure-Korean content correction when final content drifted on normal stop", () => {
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: "구조를 요약해 줘" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 구조를 확인하고 핵심 동작을 한국어로 정리한다.",
+        content: "I reviewed the repository structure and summarized all exported modules for you.",
+      }),
+    ];
+
+    const decision = decideStopAction(steps, { terminationReason: "NO_TOOL_CALL" });
+    assert.equal(decision.action, "continue");
+    assert.equal(decision.stepIndex, 1);
+    assert.equal(decision.alreadyCoveredByPostHook, false);
+    assert.equal(decision.reasonMessage, buildCorrectionMessage(["content"]));
+    assert.ok(decision.reasonMessage.startsWith(DRIFT_MARKER));
+    assert.equal(/[A-Za-z]/.test(decision.reasonMessage), false);
+  });
+
+  it("omits duplicate reason when PostInvocation already injected a drift marker after the latest planner step", () => {
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: "원인을 설명해 줘" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        content: "Here is the complete explanation of the root cause in English prose.",
+      }),
+      makeStep(2, "SYSTEM_MESSAGE", {
+        content: wrapAntigravityHookMessage(buildCorrectionMessage(["content"])),
+      }),
+    ];
+
+    const decision = decideStopAction(steps, { terminationReason: "NO_TOOL_CALL" });
+    assert.equal(decision.action, "continue");
+    assert.equal(decision.alreadyCoveredByPostHook, true);
+    assert.equal(decision.reasonMessage, "");
+
+    const dir = createTempDir();
+    const transcriptPath = join(dir, "transcript_full.jsonl");
+    writeFileSync(
+      transcriptPath,
+      toJsonl([
+        { step_index: 0, type: "USER_INPUT", content: "원인을 설명해 줘" },
+        {
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          content: "Here is the complete explanation of the root cause in English prose.",
+        },
+        {
+          step_index: 2,
+          type: "SYSTEM_MESSAGE",
+          content: wrapAntigravityHookMessage(buildCorrectionMessage(["content"])),
+        },
+      ]),
+      "utf8",
+    );
+
+    const output = handleStop(
+      JSON.stringify({
+        hookEventName: "Stop",
+        transcriptPath,
+        continuationActive: false,
+        terminationReason: "NO_TOOL_CALL",
+      }),
+    );
+    assert.deepEqual(output, { decision: "continue" });
+  });
+
+  it("guards against infinite continuation loops when continuationActive is true", () => {
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: "원인을 설명해 줘" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        content: "Here is the complete explanation of the root cause in English prose.",
+      }),
+    ];
+
+    const decision = decideStopAction(steps, { continuationActive: true });
+    assert.deepEqual(decision, { action: "noop", reason: "continuation_active" });
+
+    const dir = createTempDir();
+    const transcriptPath = join(dir, "transcript_full.jsonl");
+    writeFileSync(
+      transcriptPath,
+      toJsonl([
+        { step_index: 0, type: "USER_INPUT", content: "원인을 설명해 줘" },
+        {
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          content: "Here is the complete explanation of the root cause in English prose.",
+        },
+      ]),
+      "utf8",
+    );
+
+    const output = handleStop(
+      JSON.stringify({
+        hookEventName: "Stop",
+        transcriptPath,
+        continuationActive: true,
+        terminationReason: "NO_TOOL_CALL",
+      }),
+    );
+    assert.deepEqual(output, {});
+  });
+
+  it("enforces stateless one-retry cap per turn even if runtime omits continuationActive", () => {
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: "원인을 설명해 줘" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        content: "First English explanation that triggered a correction marker.",
+      }),
+      makeStep(2, "SYSTEM_MESSAGE", {
+        content: wrapAntigravityHookMessage(buildCorrectionMessage(["content"])),
+      }),
+      makeStep(3, "PLANNER_RESPONSE", {
+        content: "Second English explanation that still drifted after continuation.",
+      }),
+    ];
+
+    assert.deepEqual(
+      decideStopAction(steps, { continuationActive: false, terminationReason: "NO_TOOL_CALL" }),
+      { action: "noop", reason: "stop_retry_cap_reached" },
+    );
+
+    const nextTurnSteps = [
+      ...steps,
+      makeStep(4, "USER_INPUT", { content: "다음 문제도 한국어로 정리해 줘" }),
+      makeStep(5, "PLANNER_RESPONSE", {
+        content: "Another English response on a brand new user turn should be caught once.",
+      }),
+    ];
+    const nextDecision = decideStopAction(nextTurnSteps, {
+      continuationActive: false,
+      terminationReason: "NO_TOOL_CALL",
+    });
+    assert.equal(nextDecision.action, "continue");
+    assert.equal(nextDecision.stepIndex, 5);
+  });
+
+  it("noops on non-normal termination reasons", () => {
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: "설명해 줘" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        content: "Here is a full English response that should not continue after abnormal termination.",
+      }),
+    ];
+
+    for (const terminationReason of ["", "ERROR", "USER_CANCELED", "MAX_INVOCATIONS", "ABORTED"]) {
+      assert.deepEqual(decideStopAction(steps, { terminationReason }), {
+        action: "noop",
+        reason: "non_normal_termination",
+      });
+    }
+    assert.deepEqual(decideStopAction(steps), {
+      action: "noop",
+      reason: "non_normal_termination",
+    });
+  });
+
+  it("exempts English final content when lastUserInput or transcript USER_INPUT requested English output", () => {
+    const transcriptExemptSteps = [
+      makeStep(0, "USER_INPUT", { content: "이 문장을 영어로 번역해 줘" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "번역 방향을 한국어로 정리한다.",
+        content: "This distributed retry policy combines exponential backoff with jitter.",
+      }),
+    ];
+    assert.deepEqual(decideStopAction(transcriptExemptSteps, { terminationReason: "NO_TOOL_CALL" }), {
+      action: "noop",
+      reason: "content_exempt",
+    });
+
+    const overrideSteps = [
+      makeStep(0, "USER_INPUT", { content: "구조를 한국어로 설명해 줘" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        content: "Please find the complete English summary of the architecture below.",
+      }),
+    ];
+    assert.deepEqual(
+      decideStopAction(overrideSteps, {
+        lastUserInput: "Please reply in English.",
+        terminationReason: "NO_TOOL_CALL",
+      }),
+      { action: "noop", reason: "content_exempt" },
+    );
+  });
+
+  it("does not block stop when content is Korean even if thinking drifted to English", () => {
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: "핵심 변경사항을 정리해 줘" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "Let me review every modified module carefully before producing the final summary.",
+        content: "핵심 변경사항을 정리하고 모든 검증 결과를 확인했다.",
+      }),
+    ];
+
+    assert.deepEqual(decideStopAction(steps, { terminationReason: "NO_TOOL_CALL" }), {
+      action: "noop",
+      reason: "ok",
+    });
+  });
+
+  it("runs scripts/stop.mjs as a real subprocess and emits continue decision on English content drift", () => {
+    const dir = createTempDir();
+    const compactPath = join(dir, "transcript.jsonl");
+    const fullPath = join(dir, "transcript_full.jsonl");
+
+    writeFileSync(
+      compactPath,
+      toJsonl([
+        {
+          step_index: 0,
+          type: "PLANNER_RESPONSE",
+          content: "짧은 한국어 앞부분만 남고 잘린 응답이다.",
+          truncated_fields: ["content"],
+        },
+      ]),
+      "utf8",
+    );
+    writeFileSync(
+      fullPath,
+      toJsonl([
+        { step_index: 0, type: "USER_INPUT", content: "구조를 설명해 줘" },
+        {
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          thinking: "먼저 전체 구조를 확인하고 핵심 모듈의 역할을 한국어로 정리한다.",
+          content: "I inspected the repository layout and confirmed every exported hook works properly.",
+        },
+      ]),
+      "utf8",
+    );
+
+    const proc = spawnSync(process.execPath, [STOP_HOOK_SCRIPT], {
+      cwd: PLUGIN_ROOT,
+      input: JSON.stringify({
+        hookEventName: "Stop",
+        transcriptPath: compactPath,
+        continuationActive: false,
+        terminationReason: "NO_TOOL_CALL",
+      }),
+      encoding: "utf8",
+    });
+
+    assert.equal(proc.status, 0);
+    assert.equal(proc.stderr, "");
+    assert.ok(proc.stdout.endsWith("\n"));
+
+    const parsed = JSON.parse(proc.stdout);
+    assert.equal(parsed.decision, "continue");
+    assert.equal(parsed.reason, buildCorrectionMessage(["content"]));
+    assert.ok(parsed.reason.startsWith(DRIFT_MARKER));
+    assert.equal(/[A-Za-z]/.test(parsed.reason), false);
+  });
+
+  it("fails open with exit code 0 and {} on malformed stdin, wrong hookEventName, or missing transcript", () => {
+    const cases = [
+      "",
+      "{broken-json",
+      JSON.stringify([]),
+      JSON.stringify({ hookEventName: "PostInvocation", transcriptPath: "/tmp/nonexistent.jsonl" }),
+      JSON.stringify({ hookEventName: "Stop", transcriptPath: "   " }),
+      JSON.stringify({ hookEventName: "Stop", transcriptPath: "/tmp/does-not-exist-stop-hook.jsonl" }),
+    ];
+
+    for (const input of cases) {
+      assert.deepEqual(handleStop(input), {});
+      const proc = spawnSync(process.execPath, [STOP_HOOK_SCRIPT], {
+        cwd: PLUGIN_ROOT,
+        input,
+        encoding: "utf8",
+      });
+      assert.equal(proc.status, 0);
+      assert.equal(proc.stderr, "");
+      assert.deepEqual(JSON.parse(proc.stdout), {});
+    }
   });
 });
