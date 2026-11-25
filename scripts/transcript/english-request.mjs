@@ -340,13 +340,21 @@ export function isExplicitEnglishOutputRequest(rawText) {
     .replace(EN_REASONING_KOREAN_RE, DESCRIPTIVE_MASK);
   const { unnegated, negatedLangs } = stripNegatedClausesAndCollectLangs(normalizedBody);
 
-  const sentences = unnegated
-    .split(/(?<=\?)(?!\?)|[.!\n]+/)
-    .map((part) => {
-      const trimmed = part.trim();
-      return trimmed.endsWith("?") ? trimmed.replace(/[ \t]+\?+$/, "?") : trimmed;
-    })
-    .filter((part) => part.length > 0 && part !== "?");
+  const sentences = [];
+  for (const rawPart of unnegated.split(/(?<=\?)(?!\?)|[.!…\n]+/)) {
+    const trimmed = rawPart.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    const normalized = trimmed.endsWith("?") ? trimmed.replace(/[ \t?]*\?+$/, "?") : trimmed;
+    if (normalized === "?") {
+      if (sentences.length > 0 && !sentences[sentences.length - 1].endsWith("?")) {
+        sentences[sentences.length - 1] += "?";
+      }
+      continue;
+    }
+    sentences.push(normalized);
+  }
   const requestedLangs = new Set();
   for (const sentence of sentences) {
     for (const code of collectKoreanEnglishRequestLangs(sentence)) {
@@ -365,5 +373,7 @@ export function isExplicitEnglishOutputRequest(rawText) {
     return false;
   }
 
-  return !KO_KOREAN_OUTPUT_REQUEST_RE.test(unnegated) && !EN_KOREAN_OUTPUT_REQUEST_RE.test(unnegated);
+  return !sentences.some(
+    (sentence) => KO_KOREAN_OUTPUT_REQUEST_RE.test(sentence) || EN_KOREAN_OUTPUT_REQUEST_RE.test(sentence),
+  );
 }
