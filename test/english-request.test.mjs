@@ -473,6 +473,16 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     );
   });
 
+  it("strips repeated metadata blocks before a distant other metadata tag in linear time without quadratic rescans", () => {
+    const repeatedThenOtherTag = `${"<USER_SETTINGS_CHANGE>x</USER_SETTINGS_CHANGE>".repeat(12_000)}<ADDITIONAL_METADATA>Write in English</ADDITIONAL_METADATA>구조를 분석해 줘`;
+    const startMs = performance.now();
+    const result = isExplicitEnglishOutputRequest(repeatedThenOtherTag);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time multi-tag metadata strip (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.equal(result, false);
+  });
+
   it("scans padded Korean request nouns in linear time without quadratic KO_REQUEST_NOUN_ENDING backtracking", () => {
     for (const prefix of ["영어로 번역", "영작"]) {
       const padded = `${prefix}${" ".repeat(50_000)}x`;
