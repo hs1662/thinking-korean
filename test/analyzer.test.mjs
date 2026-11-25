@@ -850,4 +850,15 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
+
+  it("scans long dot-underscore tokens in linear time without quadratic DOTFILE_RE backtracking", () => {
+    const dotUnderscoreChain = `.a${"._.a".repeat(30_000)}!`;
+    const sample = `숨김 파일 .gitignore 및 .env.local 설정과 ${dotUnderscoreChain} 데이터를 한국어 문장으로 상세하게 확인하고 검증한다.`;
+    const startMs = performance.now();
+    const analysis = analyzeField("content", sample);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.equal(analysis.status, "korean");
+  });
 });
