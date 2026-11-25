@@ -172,6 +172,15 @@ export const CASES = [
       copyAnalyzerSample(workspaceDir);
     },
   },
+  {
+    name: "deep-code-audit",
+    prompt:
+      "scripts/hook-io.mjs, scripts/analyzer/stripper.mjs, scripts/transcript/english-request.mjs, scripts/transcript/decide-post.mjs 이 4개 파일만 직접 읽고, 각 파일에서 발견할 수 있는 경계 오류, 상태 추적 결함, 정규식 위험, 파서 불일치를 함수명과 줄 번호를 들어 심층 감사해 한국어로 보고해 줘. 다른 파일은 읽지 마.",
+    exemptContentDrift: false,
+    setupWorkspace(workspaceDir) {
+      cpSync(join(PLUGIN_ROOT, "scripts"), join(workspaceDir, "scripts"), { recursive: true });
+    },
+  },
 ];
 
 const CASE_BY_NAME = new Map(CASES.map((entry) => [entry.name, entry]));

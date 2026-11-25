@@ -74,6 +74,7 @@ describe("verify-live summary and CLI", () => {
 
   it("covers verify-live CLI parsing, isolated env sanitization, todo-checklist case, and content-only recovery", () => {
     assert.ok(CASES.some((entry) => entry.name === "todo-checklist"));
+    assert.ok(CASES.some((entry) => entry.name === "deep-code-audit"));
     assert.throws(() => parseCliArgs(["--timeout", "-5"]), /Invalid --timeout value/);
 
     const parsedArgs = parseCliArgs(["--models", "gemini-4-neon-xhigh", "--cases", "todo-checklist", "--timeout", "90"]);

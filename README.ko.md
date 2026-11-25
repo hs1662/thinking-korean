@@ -26,19 +26,19 @@ agy plugin enable thinking-korean
 
 플러그인은 상시 규칙 파일 하나와 세 개의 라이프사이클 훅(`PreToolUse`, `PostInvocation`, `Stop`)으로 동작합니다.
 
-- `rules/AGENTS.md`는 `<user_rules>`에 로드되는 한국어 전용 규칙 파일입니다. 내부 추론, 생각 요약, 최종 응답은 물론 사용자 화면에 표시되는 작업 단계 체크리스트(할 일 목록 제목), 도구 실행 요약, 서브에이전트 역할 이름, 질문·선택지, 아티팩트 요약까지 자연스러운 한국어 문장으로 작성하게 합니다. 모든 추론 문단의 첫 문장에 한국어 요약 고정 선언을 넣고 4에서 6문단 이내(문단당 2에서 3문장)로 압축하며, 코드 조각·긴 번호 목록·과도한 영문 식별자 나열을 피하고 짧은 확인 단계에도 구체적인 한국어 문장을 쓰게 해 서버 측 사고 요약기가 영어로 전환되거나 기본 영어 문구로 대체되는 현상을 막습니다. 파일 이름, 경로, 코드 식별자, 명령어, 고유명사, 한국어 기술 대화에서 자연스럽게 쓰는 영어 단어와 용어는 억지로 음차하지 않고 문장 안에 그대로 허용하며 영어 문장, 영어 절, 영어 문단 이탈만 금지합니다.
+- `rules/AGENTS.md`는 `<user_rules>`에 로드되는 한국어 전용 규칙 파일입니다. 한국어를 모델의 유일한 제1언어이자 모국어로 고정해 내부 추론, 생각 요약, 최종 응답, 그리고 사용자 화면에 표시되는 작업 단계 체크리스트(할 일 목록 제목), 도구 실행 요약, 서브에이전트 역할 이름, 질문·선택지, 아티팩트 요약까지 자연스러운 한국어 문장으로 작성하게 합니다. 모든 추론 문단의 첫 문장에 한국어 요약 고정 선언을 넣고 내부 추론을 2에서 3문단 이내(문단당 2문장, 전체 6문장 이내)로 압축하며, 코드 조각·괄호 영어 병기·번호·글머리 나열·장문 초안을 추론에서 배제하고 상세 분석을 곧바로 도구 호출과 최종 응답으로 넘겨 고부하 장문 감사에서도 서버 측 사고 요약기가 영어로 전환되거나 짧은 확인 단계에서 요약 메타 지침이 누출되지 않게 막습니다. 최종 응답에서는 파일 이름, 경로, 코드 식별자, 명령어, 고유명사, 한국어 기술 대화에서 자연스럽게 쓰는 영어 단어와 용어를 원문 그대로 허용하며 영어 문장, 영어 절, 영어 문단 이탈만 금지합니다.
 - `hooks.json`의 `PreToolUse`는 순수 사용자 표시 도구(`update_steps`, `ask_question`, `todo_write`, `task_create`, `task_update`, `update_plan`) 실행 직전에 `scripts/pre-tool-use.mjs`를 실행합니다. 작업 단계 제목이나 선택지가 영어로 이탈하면 화면에 렌더링되기 전에 `decision: "deny"`와 한국어 교정 사유를 반환하며, 턴당 1회 무상태 재시도 상한으로 무한 차단을 막습니다.
-- `hooks.json`의 `PostInvocation`은 모델 호출과 도구 실행이 끝난 뒤 `scripts/post-invocation.mjs`를 실행해 `transcript_full.jsonl`의 최신 `PLANNER_RESPONSE`(`thinking`, `content`, `tool_calls` 화면 표시 텍스트)를 검사합니다. 분석기(`scripts/analyzer.mjs`)는 한국어 문장 안에 자연스럽게 섞인 1에서 3단어 비산문 영어 기술 용어와 코드, 경로, 식별자, 그리고 `thinking`에 서버 사고 요약기가 삽입하는 고정 영문 1줄 폴백 문구는 오탐하지 않고 영어 문장, 축약형 절, 4단어 이상 연속 영어 구절, 영어 문단, 영어 화면 표시 제목 이탈만 감지합니다. 영어 이탈이 감지되면 한국어 `[한국어사고:영어이탈]` `systemMessage`를 비차단으로 주입하며, 무상태 복구 인식 백오프를 적용합니다.
+- `hooks.json`의 `PostInvocation`은 모델 호출과 도구 실행이 끝난 뒤 `scripts/post-invocation.mjs`를 실행해 `transcript_full.jsonl`의 최신 `PLANNER_RESPONSE`(`thinking`, `content`, `tool_calls` 화면 표시 텍스트)를 검사합니다. 분석기(`scripts/analyzer.mjs`)는 한국어 문장 안에 자연스럽게 섞인 1에서 3단어 비산문 영어 기술 용어와 닫힌 코드 펜스, 경로, 식별자, 그리고 `thinking`에 서버 사고 요약기가 삽입하는 고정 영문 1줄 폴백 문구는 오탐하지 않고 영어 문장(한국어 줄 끝에 붙은 4에서 7단어 영어 문장 포함), 축약형 절, 4단어 이상 연속 영어 구절, 영어 문단, 미닫힘 코드 펜스 뒤 영어 이탈, 영어 화면 표시 제목(Title Case 작업 요약·서브에이전트 역할 포함) 이탈을 감지합니다. 영어 이탈이 감지되면 한국어 `[한국어사고:영어이탈]` `systemMessage`를 비차단으로 주입하며, 무상태 복구 인식 백오프를 적용합니다.
   - 한국어로 복구되면 실패 횟수와 쿨다운을 즉시 초기화합니다.
   - `thinking` 단독 또는 `ui` 단독 이탈이 계속되면 백오프 후 연속 미복구 상한(`2`회)에 도달할 때 추가 주입을 중단해 컨텍스트 오염을 막고, 실제 한국어 출력이 다시 나오면 상한을 해제합니다.
-  - 사용자 응답(`content`) 이탈은 독립 예산을 유지하며, `USER_INPUT`에 명시적인 영어 번역·작성 요청이 있으면 `thinking`과 작업 단계 체크리스트 검사는 유지하되 `content`만 면제합니다.
+  - 사용자 응답(`content`) 이탈은 독립 예산을 유지하며, `USER_INPUT`에 명시적인 외국어 번역·작성 요청(파일명·버전 마침표 포함, 일본어·중국어, 절 단위 부정, 내부 추론 한국어 병기 포함)이 있으면 `thinking`과 작업 단계 체크리스트 검사는 유지하되 `content`만 면제합니다.
 - `hooks.json`의 `Stop`은 정상 종료(`NO_TOOL_CALL`) 직전 `scripts/stop.mjs`를 실행합니다. 명시적인 번역 요청이 아닌데 최종 사용자 응답(`content`)이 영어로 이탈한 경우에만 `decision: "continue"`를 1회 반환해 한국어 응답으로 교정합니다. 같은 턴 앞선 스텝의 `thinking`·`ui` 전용 마커는 `Stop` 복구를 막지 않으며, 이미 재시도 중(`continuationActive: true`)이거나 비정상 종료, 또는 `content`가 이미 한국어인 경우에는 그대로 통과합니다.
 - 훅 실패 시 통과 규칙: `PreToolUse`는 호출을 허용할 때와 읽기, 파싱, 예외 오류가 났을 때 모두 `{"decision":"allow"}`를 반환합니다. `PostInvocation`과 `Stop`은 아무 조치가 필요 없을 때와 같은 오류가 났을 때 `{}`를 반환해 그대로 통과합니다.
 
 복구 동작의 세부 사항은 다음과 같습니다.
 
 - 주입 메시지는 이탈한 필드를 함께 적은 구조화 마커로 시작합니다. 예를 들어 `[한국어사고:영어이탈][대상:추론+응답]`처럼 쓰며, `추론`은 `thinking`, `응답`은 `content`, `화면`은 `ui`를 뜻합니다. 대상 태그가 없는 기존 `[한국어사고:영어이탈]` 마커와 예전 `[thinking-korean:drift]` 마커도 계속 인식합니다.
-- `PreToolUse`가 호출을 거부한 뒤에는 `PostInvocation`이 `ui` 필드를 이미 교정된 것으로 보고 같은 이탈에 대해 메시지를 한 번 더 주입하지 않습니다.
+- `PreToolUse`가 호출을 거부한 뒤에는 `PostInvocation`이 거부된 도구 호출 인덱스만 제외하고 평가하므로, 같은 스텝의 비차단 도구(`run_command`의 `toolSummary`, `invoke_subagent`의 `Role` 등)에 남은 영어 화면 텍스트는 누락 없이 교정합니다.
 - 한국어로 복구되면 재시도 상한을 초기화합니다. 같은 화면 표시 도구를 한국어로 다시 호출해 통과하면 `PreToolUse` 재시도 횟수가 0으로 돌아가고, 한국어 출력이 나오면 해당 필드의 `PostInvocation` 실패 횟수와 쿨다운도 초기화됩니다.
 - `React Router`, `Docker Compose`처럼 짧은 기술 고유명사(Title Case 단어, 약어, 버전으로만 이뤄진 4단어 이하)만으로 된 선택지나 단계 제목은 영어 이탈로 보지 않고 허용합니다.
 
@@ -75,8 +75,8 @@ node test/verify-live.mjs --models gemini-4-neon-xhigh,claude-opus-5-5-high
 ```sh
 node test/verify-live.mjs \
   --models gemini-4-neon-xhigh,claude-opus-5-5-high \
-  --cases korean-reasoning,tool-code-analysis,heavy-english-skill-tools,explicit-translation,todo-checklist \
-  --timeout 180 \
+  --cases korean-reasoning,tool-code-analysis,heavy-english-skill-tools,explicit-translation,todo-checklist,deep-code-audit \
+  --timeout 240 \
   --keep-logs
 ```
 

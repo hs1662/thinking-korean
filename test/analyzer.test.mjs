@@ -27,7 +27,9 @@ describe("rules", () => {
     assert.equal(rulesText.includes("영문 알파벳을 단 한 글자도 쓰지 말고"), false);
     assert.equal(rulesText.includes("반드시 한국어 뜻이나 한글 음차로 바꿔서"), false);
     assert.ok(rulesText.includes("자연스러운 한국어"));
+    assert.ok(rulesText.includes("모국어"));
     assert.ok(rulesText.includes("이 추론과 생각 요약은 반드시 한국어로만 작성한다."));
+    assert.ok(rulesText.includes("2에서 3문단 이내"));
     assert.ok(rulesText.includes("영어 문장"));
   });
 
