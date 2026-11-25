@@ -1,14 +1,26 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it } from "node:test";
 
 import { analyzeField } from "../scripts/analyzer.mjs";
-import { DRIFT_MARKER, buildCorrectionMessage } from "../scripts/transcript.mjs";
+import { GATE_TOOL_NAME } from "../scripts/governance/constants.mjs";
+import { DRIFT_MARKER, GATE_STOP_MARKER, buildCorrectionMessage } from "../scripts/transcript.mjs";
 import { createTempDir, makeDenialStep, makeStep, wrapAntigravityHookMessage } from "./helpers.mjs";
-import { CASES, buildIsolatedEnv, parseCliArgs, summarizeTranscript } from "./verify-live.mjs";
+import {
+  CASES,
+  buildIsolatedEnv,
+  countHookcallerPanics,
+  evaluateGovernanceCase,
+  parseAuditJsonl,
+  parseCliArgs,
+  readIsolatedAuditRecords,
+  setupSampleCalcWorkspace,
+  summarizeGovernance,
+  summarizeTranscript,
+} from "./verify-live.mjs";
 
 describe("verify-live summary and CLI", () => {
   it("surfaces contentExemptionPassed honestly in verify-live summarizeTranscript for explicit-translation", () => {
@@ -328,5 +340,289 @@ describe("QA F1/F3: summarizeTranscript denial detection and per-call mapping", 
     );
     assert.deepEqual(firstPassed.requiredToolsExecuted, { update_steps: true });
     assert.deepEqual(firstPassed.deniedTools, ["update_steps"]);
+  });
+});
+
+describe("verify-live governance cases L1-L4, audit parsing, and panic detection", () => {
+  const koreanThinking = "이 추론과 생각 요약은 반드시 한국어로만 작성한다. 작업 결과와 검증 근거를 확인한다.";
+  const koreanContent = "할인 계산 버그를 수정하고 단위 테스트 통과를 확인했습니다.";
+
+  it("registers all 10 cases (6 existing + L1..L4) and sets up the buggy sample-calc workspace cleanly", () => {
+    const names = CASES.map((entry) => entry.name);
+    assert.deepEqual(names, [
+      "korean-reasoning",
+      "tool-code-analysis",
+      "heavy-english-skill-tools",
+      "explicit-translation",
+      "todo-checklist",
+      "deep-code-audit",
+      "L1-golden-path",
+      "L2-unverified-reject-recovery",
+      "L3-bypass-stop-recovery",
+      "L4-readonly-frictionless",
+    ]);
+
+    for (const govName of [
+      "L1-golden-path",
+      "L2-unverified-reject-recovery",
+      "L3-bypass-stop-recovery",
+      "L4-readonly-frictionless",
+    ]) {
+      const testCase = CASES.find((entry) => entry.name === govName);
+      assert.equal(testCase.commitInitialWorkspace, true, `${govName}: must commit initial fixture`);
+      assert.equal(typeof testCase.setupWorkspace, "function");
+      assert.ok(testCase.governanceExpectation, `${govName}: must declare governanceExpectation`);
+    }
+
+    const parsedL = parseCliArgs([
+      "--cases",
+      "L1-golden-path,L2-unverified-reject-recovery,L3-bypass-stop-recovery,L4-readonly-frictionless",
+    ]);
+    assert.equal(parsedL.cases.length, 4);
+
+    const workspaceDir = createTempDir("hstack-calc-fixture-");
+    setupSampleCalcWorkspace(workspaceDir);
+    assert.ok(existsSync(join(workspaceDir, "package.json")));
+    assert.ok(existsSync(join(workspaceDir, "src", "calc.mjs")));
+    assert.ok(existsSync(join(workspaceDir, "test", "calc.test.mjs")));
+
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.NODE_TEST_CONTEXT;
+    const testRun = spawnSync(process.execPath, ["--test"], { cwd: workspaceDir, env: cleanEnv, encoding: "utf8" });
+    assert.notEqual(testRun.status, 0, "fixture test must fail initially because applyDiscount adds instead of subtracts");
+
+    const envWithFallback = buildIsolatedEnv("/tmp/fake-home", "/tmp/fake-appdata", "/tmp/fake-fallback");
+    assert.equal(envWithFallback.HSTACK_DATA_DIR, "/tmp/fake-fallback");
+    assert.equal("PLUGIN_DATA" in envWithFallback, false);
+  });
+
+  it("detects hookcaller panics in CLI logs and ignores clean logs", () => {
+    assert.equal(countHookcallerPanics(""), 0);
+    assert.equal(countHookcallerPanics("INFO starting agy\nINFO hook completed cleanly\n"), 0);
+    assert.equal(
+      countHookcallerPanics(
+        [
+          "INFO startup",
+          "ERROR hookcaller.go:241: runtime error: panic during PreToolUse",
+          "FATAL panicked: hookcaller nil pointer dereference",
+          "WARN hookcaller recovered panic in Stop",
+        ].join("\n"),
+      ),
+      3,
+    );
+  });
+
+  it("parses audit.jsonl safely and resolves isolated plugin_data vs fallback paths", () => {
+    const raw = [
+      JSON.stringify({ event: "post_invocation", metrics: { cacheReadTokens: 1200 } }),
+      "not-valid-json",
+      "[]",
+      JSON.stringify({ event: "gate_verify", verdict: "PASS", blockedRules: [], warnedRules: [], attemptInTurn: 1 }),
+    ].join("\n");
+    const parsed = parseAuditJsonl(raw);
+    assert.equal(parsed.length, 2);
+    assert.equal(parsed[0].event, "post_invocation");
+    assert.equal(parsed[1].verdict, "PASS");
+
+    const tempRoot = createTempDir("hstack-audit-read-");
+    const homeDir = join(tempRoot, "home");
+    const fallbackDir = join(tempRoot, "fallback");
+
+    assert.deepEqual(readIsolatedAuditRecords({ homeDir, fallbackDataDir: fallbackDir, pluginName: "hstack" }), {
+      records: [],
+      auditPathUsed: "none",
+    });
+
+    mkdirSync(fallbackDir, { recursive: true });
+    writeFileSync(
+      join(fallbackDir, "audit.jsonl"),
+      `${JSON.stringify({ event: "stop_decision", decision: "continue_gate", executionNum: 0 })}\n`,
+      "utf8",
+    );
+    const fallbackOnly = readIsolatedAuditRecords({ homeDir, fallbackDataDir: fallbackDir, pluginName: "hstack" });
+    assert.equal(fallbackOnly.auditPathUsed, "fallback");
+    assert.equal(fallbackOnly.records.length, 1);
+
+    const pluginDataDir = join(homeDir, ".gemini", "config", "plugins", "data", "hstack");
+    mkdirSync(pluginDataDir, { recursive: true });
+    writeFileSync(
+      join(pluginDataDir, "audit.jsonl"),
+      `${JSON.stringify({ event: "gate_verify", verdict: "PASS", blockedRules: [], warnedRules: [], attemptInTurn: 1 })}\n`,
+      "utf8",
+    );
+    const withPluginData = readIsolatedAuditRecords({ homeDir, fallbackDataDir: fallbackDir, pluginName: "hstack" });
+    assert.equal(withPluginData.auditPathUsed, "plugin_data");
+    assert.equal(withPluginData.records.length, 2);
+  });
+
+  it("does not count GATE_STOP_MARKER-only Stop messages as language driftInjections", () => {
+    const l3Case = CASES.find((entry) => entry.name === "L3-bypass-stop-recovery");
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: l3Case.prompt }),
+      makeStep(1, "PLANNER_RESPONSE", { thinking: koreanThinking, content: koreanContent }),
+      makeStep(2, "SYSTEM_MESSAGE", {
+        content: wrapAntigravityHookMessage(
+          `${GATE_STOP_MARKER} 이번 턴에서 파일을 수정했으나 수정 이후 완료 검증 도구를 통과한 기록이 없다.`,
+          "Stop",
+        ),
+      }),
+      makeStep(3, "PLANNER_RESPONSE", {
+        thinking: koreanThinking,
+        toolCalls: [{ name: GATE_TOOL_NAME, args: {} }],
+      }),
+      makeStep(4, "PLANNER_RESPONSE", { thinking: koreanThinking, content: koreanContent }),
+    ];
+
+    const summary = summarizeTranscript(steps, l3Case);
+    assert.equal(summary.status, "pass");
+    assert.equal(summary.driftInjections, 0);
+
+    const gov = summarizeGovernance({
+      steps,
+      auditRecords: [
+        { event: "stop_decision", decision: "continue_gate", executionNum: 0 },
+        { event: "gate_verify", verdict: "PASS", blockedRules: [], warnedRules: [], attemptInTurn: 1 },
+      ],
+      auditPathUsed: "plugin_data",
+    });
+    assert.equal(gov.stopGateBlocks, 1);
+    assert.equal(gov.stopBlocks, 1);
+    assert.equal(gov.gateCallCount, 1);
+  });
+
+  it("evaluates L1-golden-path pass and failure branches accurately", () => {
+    const l1Case = CASES.find((entry) => entry.name === "L1-golden-path");
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: l1Case.prompt }),
+      makeStep(1, "PLANNER_RESPONSE", { thinking: koreanThinking, toolCalls: [{ name: GATE_TOOL_NAME, args: {} }] }),
+      makeStep(2, "PLANNER_RESPONSE", { thinking: koreanThinking, content: koreanContent }),
+    ];
+    const passEval = evaluateGovernanceCase(l1Case, {
+      steps,
+      auditRecords: [
+        {
+          event: "gate_verify",
+          verdict: "PASS",
+          blockedRules: [],
+          warnedRules: [],
+          attemptInTurn: 1,
+          metrics: { cacheReadTokens: 3200 },
+        },
+      ],
+      auditPathUsed: "plugin_data",
+      hookcallerPanics: 0,
+      rawTranscript: '{"type":"GENERIC","content":"A pre-tool hook changed the arguments\\n[완료 검증 통과]"}',
+      gitDirtyFiles: ["src/calc.mjs"],
+    });
+    assert.equal(passEval.ok, true);
+    assert.deepEqual(passEval.failures, []);
+    assert.equal(passEval.governance.cacheReadTokens, 3200);
+    assert.equal(passEval.governance.preToolOverwriteDetected, true);
+
+    const skippedSessionEval = evaluateGovernanceCase(l1Case, {
+      steps,
+      auditRecords: [
+        { event: "gate_verify", verdict: "SKIPPED_NO_SESSION", blockedRules: [], warnedRules: [], attemptInTurn: 1 },
+      ],
+      auditPathUsed: "fallback",
+      hookcallerPanics: 0,
+      rawTranscript: '{"type":"GENERIC","content":"[완료 검증 생략]"}',
+    });
+    assert.equal(skippedSessionEval.ok, false);
+    assert.ok(skippedSessionEval.failures.some((msg) => msg.includes('Expected final gate verdict "PASS"')));
+    assert.ok(skippedSessionEval.failures.some((msg) => msg.includes("PreToolUse gate interception")));
+
+    const panicEval = evaluateGovernanceCase(l1Case, {
+      steps,
+      auditRecords: [{ event: "gate_verify", verdict: "PASS", blockedRules: [], warnedRules: [], attemptInTurn: 1 }],
+      hookcallerPanics: 1,
+      rawTranscript: "A pre-tool hook changed the arguments",
+    });
+    assert.equal(panicEval.ok, false);
+    assert.ok(panicEval.failures.some((msg) => msg.includes("hookcaller panic")));
+  });
+
+  it("evaluates L2-unverified-reject-recovery, L3-bypass-stop-recovery, and L4-readonly-frictionless accurately", () => {
+    const l2Case = CASES.find((entry) => entry.name === "L2-unverified-reject-recovery");
+    const l2Pass = evaluateGovernanceCase(l2Case, {
+      auditRecords: [
+        {
+          event: "gate_verify",
+          verdict: "REJECT",
+          blockedRules: ["R2_STALE_VERIFICATION"],
+          warnedRules: [],
+          attemptInTurn: 1,
+        },
+        { event: "gate_verify", verdict: "PASS", blockedRules: [], warnedRules: [], attemptInTurn: 2 },
+      ],
+      auditPathUsed: "plugin_data",
+    });
+    assert.equal(l2Pass.ok, true);
+
+    const l2MissingReject = evaluateGovernanceCase(l2Case, {
+      auditRecords: [{ event: "gate_verify", verdict: "PASS", blockedRules: [], warnedRules: [], attemptInTurn: 1 }],
+    });
+    assert.equal(l2MissingReject.ok, false);
+    assert.ok(l2MissingReject.failures.some((msg) => msg.includes("R2_STALE_VERIFICATION")));
+
+    const l3Case = CASES.find((entry) => entry.name === "L3-bypass-stop-recovery");
+    const l3Steps = [
+      makeStep(0, "USER_INPUT", { content: l3Case.prompt }),
+      makeStep(1, "PLANNER_RESPONSE", { thinking: koreanThinking, content: koreanContent }),
+      makeStep(2, "SYSTEM_MESSAGE", {
+        content: wrapAntigravityHookMessage(`${GATE_STOP_MARKER} 완료 검증이 필요합니다.`, "Stop"),
+      }),
+      makeStep(3, "PLANNER_RESPONSE", { thinking: koreanThinking, toolCalls: [{ name: GATE_TOOL_NAME, args: {} }] }),
+      makeStep(4, "PLANNER_RESPONSE", { thinking: koreanThinking, content: koreanContent }),
+    ];
+    const l3Pass = evaluateGovernanceCase(l3Case, {
+      steps: l3Steps,
+      auditRecords: [
+        { event: "stop_decision", decision: "continue_gate", executionNum: 0 },
+        { event: "gate_verify", verdict: "PASS", blockedRules: [], warnedRules: [], attemptInTurn: 1 },
+      ],
+    });
+    assert.equal(l3Pass.ok, true);
+    assert.equal(l3Pass.governance.stopMaxExecutionNum, 0);
+
+    const l3Runaway = evaluateGovernanceCase(l3Case, {
+      steps: l3Steps,
+      auditRecords: [
+        { event: "stop_decision", decision: "continue_gate", executionNum: 0 },
+        { event: "stop_decision", decision: "allow_cap", executionNum: 2 },
+        { event: "gate_verify", verdict: "PASS", blockedRules: [], warnedRules: [], attemptInTurn: 1 },
+      ],
+    });
+    assert.equal(l3Runaway.ok, false);
+    assert.ok(l3Runaway.failures.some((msg) => msg.includes("stopMaxExecutionNum < 2")));
+
+    const l4Case = CASES.find((entry) => entry.name === "L4-readonly-frictionless");
+    const l4Pass = evaluateGovernanceCase(l4Case, {
+      steps: [
+        makeStep(0, "USER_INPUT", { content: l4Case.prompt }),
+        makeStep(1, "PLANNER_RESPONSE", { thinking: koreanThinking, content: koreanContent }),
+      ],
+      auditRecords: [{ event: "post_invocation", metrics: { cacheReadTokens: 4096 } }],
+      gitDirtyFiles: [],
+    });
+    assert.equal(l4Pass.ok, true);
+    assert.equal(l4Pass.governance.gateCallCount, 0);
+    assert.equal(l4Pass.governance.stopBlocks, 0);
+    assert.equal(l4Pass.governance.cacheReadTokens, 4096);
+
+    const l4Violated = evaluateGovernanceCase(l4Case, {
+      steps: [
+        makeStep(0, "PLANNER_RESPONSE", { thinking: koreanThinking, toolCalls: [{ name: GATE_TOOL_NAME, args: {} }] }),
+      ],
+      auditRecords: [
+        { event: "gate_verify", verdict: "PASS", blockedRules: [], warnedRules: [], attemptInTurn: 1 },
+        { event: "stop_decision", decision: "continue_gate", executionNum: 0 },
+      ],
+      gitDirtyFiles: ["src/calc.mjs"],
+    });
+    assert.equal(l4Violated.ok, false);
+    assert.ok(l4Violated.failures.some((msg) => msg.includes("gateCallCount=0")));
+    assert.ok(l4Violated.failures.some((msg) => msg.includes("stopBlocks=0")));
+    assert.ok(l4Violated.failures.some((msg) => msg.includes("no modified files")));
   });
 });

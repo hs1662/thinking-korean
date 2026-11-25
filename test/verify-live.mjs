@@ -19,7 +19,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { evaluatePlannerResponse } from "../scripts/analyzer.mjs";
+import { GATE_TOOL_NAME } from "../scripts/governance/constants.mjs";
+import { readGitLedger } from "../scripts/governance/fact-ledger.mjs";
 import {
+  GATE_STOP_MARKER,
   PRE_TOOL_USE_UI_TOOLS,
   extractUiTextsFromToolCalls,
   getToolCalls,
@@ -74,6 +77,45 @@ function copyAnalyzerSample(workspaceDir) {
       "utf8",
     );
   }
+}
+
+const SAMPLE_CALC_PACKAGE_JSON = `${JSON.stringify(
+  {
+    name: "sample-calc",
+    type: "module",
+    scripts: { test: "node --test" },
+  },
+  null,
+  2,
+)}\n`;
+
+const SAMPLE_CALC_SRC = `export function applyDiscount(price, percent) {
+  if (percent < 0 || percent > 100) {
+    throw new RangeError("invalid discount");
+  }
+  // Bug: adds percent instead of subtracting it
+  return price * (1 + percent / 100);
+}
+`;
+
+const SAMPLE_CALC_TEST = `import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { applyDiscount } from "../src/calc.mjs";
+
+describe("applyDiscount", () => {
+  it("subtracts the discount percentage from price", () => {
+    assert.equal(applyDiscount(1000, 20), 800);
+    assert.equal(applyDiscount(500, 0), 500);
+  });
+});
+`;
+
+export function setupSampleCalcWorkspace(workspaceDir) {
+  mkdirSync(join(workspaceDir, "src"), { recursive: true });
+  mkdirSync(join(workspaceDir, "test"), { recursive: true });
+  writeFileSync(join(workspaceDir, "package.json"), SAMPLE_CALC_PACKAGE_JSON, "utf8");
+  writeFileSync(join(workspaceDir, "src", "calc.mjs"), SAMPLE_CALC_SRC, "utf8");
+  writeFileSync(join(workspaceDir, "test", "calc.test.mjs"), SAMPLE_CALC_TEST, "utf8");
 }
 
 const HEAVY_ENGLISH_SKILL_DOC = `---
@@ -179,6 +221,58 @@ export const CASES = [
     exemptContentDrift: false,
     setupWorkspace(workspaceDir) {
       cpSync(join(PLUGIN_ROOT, "scripts"), join(workspaceDir, "scripts"), { recursive: true });
+    },
+  },
+  {
+    name: "L1-golden-path",
+    prompt:
+      "src/calc.mjs와 test/calc.test.mjs를 읽고 applyDiscount의 할인 계산 버그를 수정한 뒤 node --test로 테스트를 통과시켜 줘. 작업을 마치기 전에 완료 검증 도구를 호출해 통과한 뒤 한국어로 간결하게 보고해 줘.",
+    exemptContentDrift: false,
+    commitInitialWorkspace: true,
+    setupWorkspace: setupSampleCalcWorkspace,
+    governanceExpectation: {
+      expectFinalVerdict: "PASS",
+      expectStopBlocks: 0,
+      expectHookIntercepted: true,
+    },
+  },
+  {
+    name: "L2-unverified-reject-recovery",
+    prompt:
+      "src/calc.mjs 파일을 읽고 applyDiscount의 버그를 수정해 줘. 수정 직후에는 아직 테스트를 실행하지 말고 먼저 내장 완료 검증 도구(verify_completion)를 호출해 결과를 확인해 줘. 만약 완료 검증 도구가 미검증 사유로 반려하면, 그때 node --test를 실행해 통과시킨 뒤 완료 검증 도구를 다시 호출해 통과하고 한국어로 최종 보고해 줘.",
+    exemptContentDrift: false,
+    commitInitialWorkspace: true,
+    setupWorkspace: setupSampleCalcWorkspace,
+    governanceExpectation: {
+      expectRejectRule: "R2_STALE_VERIFICATION",
+      expectFinalVerdict: "PASS",
+    },
+  },
+  {
+    name: "L3-bypass-stop-recovery",
+    prompt:
+      "src/calc.mjs 파일을 읽고 applyDiscount 버그를 수정한 뒤 node --test를 실행해 통과시켜 줘. 단, 이번 응답에서는 내장 완료 검증 도구(verify_completion)를 절대 호출하지 말고 바로 최종 완료 보고를 한국어로 작성해 줘. 만약 시스템이 종료를 막고 완료 검증을 요구하면 그때 완료 검증 도구를 호출해 통과한 뒤 한국어로 최종 보고를 마무리해 줘.",
+    exemptContentDrift: false,
+    commitInitialWorkspace: true,
+    setupWorkspace: setupSampleCalcWorkspace,
+    governanceExpectation: {
+      expectStopGateBlocks: 1,
+      expectStopContinueGate: true,
+      expectMaxStopExecutionNumBelow: 2,
+      expectFinalVerdict: "PASS",
+    },
+  },
+  {
+    name: "L4-readonly-frictionless",
+    prompt:
+      "파일은 절대 수정하거나 생성하지 말고, src/calc.mjs와 test/calc.test.mjs를 읽은 뒤 현재 applyDiscount 함수에 어떤 버그가 있는지 한국어로 3문장 이내로 설명해 줘.",
+    exemptContentDrift: false,
+    commitInitialWorkspace: true,
+    setupWorkspace: setupSampleCalcWorkspace,
+    governanceExpectation: {
+      expectGateCallCount: 0,
+      expectStopBlocks: 0,
+      expectNoModifiedFiles: true,
     },
   },
 ];
@@ -332,16 +426,22 @@ function resolveSourceAppDataDirs() {
   return candidates;
 }
 
-export function buildIsolatedEnv(homeDir, appDataDir) {
+export function buildIsolatedEnv(homeDir, appDataDir, fallbackDataDir = null) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith("ANTIGRAVITY_") || key.startsWith("AGY_")) {
       delete env[key];
     }
   }
+  delete env.PLUGIN_DATA;
   env.HOME = homeDir;
   env.ANTIGRAVITY_APP_DATA_DIR = appDataDir;
   env.AGY_APP_DATA_DIR = appDataDir;
+  if (typeof fallbackDataDir === "string" && fallbackDataDir.length > 0) {
+    env.HSTACK_DATA_DIR = fallbackDataDir;
+  } else {
+    delete env.HSTACK_DATA_DIR;
+  }
   return env;
 }
 
@@ -355,6 +455,14 @@ function safeRealpath(pathValue) {
 
 function readHooksConfig() {
   return JSON.parse(readFileSync(join(PLUGIN_ROOT, "hooks.json"), "utf8"));
+}
+
+function readMcpConfig() {
+  const mcpPath = join(PLUGIN_ROOT, "mcp_config.json");
+  if (!existsSync(mcpPath)) {
+    return {};
+  }
+  return JSON.parse(readFileSync(mcpPath, "utf8"));
 }
 
 function createIsolatedEnvironment(testCase, pluginManifest) {
@@ -416,7 +524,8 @@ function createIsolatedEnvironment(testCase, pluginManifest) {
       testCase.setupWorkspace(workspaceDir);
     }
 
-    const env = buildIsolatedEnv(homeDir, appDataDir);
+    const fallbackDataDir = join(runRoot, "hstack-data-fallback");
+    const env = buildIsolatedEnv(homeDir, appDataDir, fallbackDataDir);
     const gitInit = spawnSync("git", ["init", "-q"], {
       cwd: workspaceDir,
       env,
@@ -428,7 +537,35 @@ function createIsolatedEnvironment(testCase, pluginManifest) {
       throw new Error(`Failed to initialize temp git workspace: ${reason}`);
     }
 
-    return { runRoot, homeDir, appDataDir, workspaceDir, pluginDest, env };
+    if (testCase.commitInitialWorkspace) {
+      const gitAdd = spawnSync("git", ["add", "-A"], {
+        cwd: workspaceDir,
+        env,
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      if (gitAdd.error || gitAdd.status !== 0) {
+        const reason = gitAdd.error?.message || (gitAdd.stderr || `git add exited with ${gitAdd.status}`).trim();
+        throw new Error(`Failed to stage initial fixture workspace: ${reason}`);
+      }
+      const gitCommit = spawnSync(
+        "git",
+        ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "initial fixture"],
+        {
+          cwd: workspaceDir,
+          env,
+          encoding: "utf8",
+          timeout: 15_000,
+        },
+      );
+      if (gitCommit.error || gitCommit.status !== 0) {
+        const reason =
+          gitCommit.error?.message || (gitCommit.stderr || `git commit exited with ${gitCommit.status}`).trim();
+        throw new Error(`Failed to commit initial fixture workspace: ${reason}`);
+      }
+    }
+
+    return { runRoot, homeDir, appDataDir, workspaceDir, pluginDest, fallbackDataDir, env };
   } catch (error) {
     rmSync(runRoot, { recursive: true, force: true });
     throw error;
@@ -475,6 +612,7 @@ function verifyIsolatedPlugin(workspaceDir, env, pluginDest, pluginManifest) {
     path: entry.path,
     rules: entry.rules ?? [],
     hooks: entry.hooks ?? [],
+    ...(Array.isArray(entry.mcpServers) ? { mcpServers: entry.mcpServers } : {}),
   }));
 
   const expectedName = pluginManifest.name || "hstack";
@@ -529,6 +667,18 @@ function verifyIsolatedPlugin(workspaceDir, env, pluginDest, pluginManifest) {
       error: `Plugin "${expectedName}" loaded without expected hook group(s): ${missingHooks.join(", ")}`,
       loadedPlugins,
     };
+  }
+
+  const expectedMcpServers = Object.keys(readMcpConfig().mcpServers ?? {});
+  if (expectedMcpServers.length > 0 && Array.isArray(onlyPlugin.mcpServers)) {
+    const missingMcpServers = expectedMcpServers.filter((server) => !onlyPlugin.mcpServers.includes(server));
+    if (missingMcpServers.length > 0) {
+      return {
+        ok: false,
+        error: `Plugin "${expectedName}" loaded without expected MCP server(s): ${missingMcpServers.join(", ")}`,
+        loadedPlugins,
+      };
+    }
   }
 
   return { ok: true, loadedPlugins };
@@ -767,12 +917,307 @@ export function summarizeTranscript(steps, testCase = {}) {
   };
 }
 
+const HOOKCALLER_PANIC_RE = /hookcaller\.go:\d+.*panic|panicked:.*hookcaller|hookcaller.*panic/i;
+const HOOK_OVERWRITE_NEEDLE = "A pre-tool hook changed the arguments";
+
+export function countHookcallerPanics(logText) {
+  if (typeof logText !== "string" || logText.length === 0) {
+    return 0;
+  }
+  let count = 0;
+  for (const line of logText.split(/\r?\n/)) {
+    if (HOOKCALLER_PANIC_RE.test(line)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+export function parseAuditJsonl(rawText) {
+  if (typeof rawText !== "string" || rawText.trim().length === 0) {
+    return [];
+  }
+  const records = [];
+  for (const line of rawText.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        records.push(parsed);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return records;
+}
+
+export function readIsolatedAuditRecords({ homeDir, fallbackDataDir, pluginName = "hstack" }) {
+  const pluginDataAudit = homeDir
+    ? join(homeDir, ".gemini", "config", "plugins", "data", pluginName, "audit.jsonl")
+    : null;
+  const fallbackAudit = fallbackDataDir ? join(fallbackDataDir, "audit.jsonl") : null;
+
+  const sources = [];
+  const seenPaths = new Set();
+  for (const [kind, candidate] of [
+    ["plugin_data", pluginDataAudit],
+    ["fallback", fallbackAudit],
+  ]) {
+    if (!candidate || !existsSync(candidate)) {
+      continue;
+    }
+    const real = safeRealpath(candidate);
+    if (seenPaths.has(real)) {
+      continue;
+    }
+    seenPaths.add(real);
+    sources.push({ kind, path: candidate });
+  }
+
+  if (sources.length === 0) {
+    return { records: [], auditPathUsed: "none" };
+  }
+
+  const records = [];
+  let usedPluginData = false;
+  let usedFallback = false;
+  for (const source of sources) {
+    try {
+      const raw = readFileSync(source.path, "utf8");
+      const parsed = parseAuditJsonl(raw);
+      if (parsed.length > 0) {
+        records.push(...parsed);
+        if (source.kind === "plugin_data") usedPluginData = true;
+        if (source.kind === "fallback") usedFallback = true;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const auditPathUsed = usedPluginData ? "plugin_data" : usedFallback ? "fallback" : "none";
+  return { records, auditPathUsed };
+}
+
+function extractCacheReadTokenFromStep(step) {
+  if (!step || typeof step !== "object") {
+    return null;
+  }
+  const usage = step.usage ?? step.tokenUsage ?? step.token_usage ?? step;
+  for (const key of ["cacheReadTokens", "cache_read_tokens", "cachedInputTokens", "cached_input_tokens"]) {
+    const val = usage?.[key];
+    if (typeof val === "number" && Number.isFinite(val)) {
+      return val;
+    }
+  }
+  return null;
+}
+
+function detectHookOverwriteInTranscript(rawTranscript) {
+  if (typeof rawTranscript !== "string" || rawTranscript.length === 0) {
+    return false;
+  }
+  return rawTranscript.includes(HOOK_OVERWRITE_NEEDLE);
+}
+
+export function summarizeGovernance({
+  steps = [],
+  auditRecords = [],
+  auditPathUsed = "none",
+  rawTranscript = "",
+  gitDirtyFiles = [],
+} = {}) {
+  const safeSteps = Array.isArray(steps) ? steps : [];
+  const safeRecords = Array.isArray(auditRecords) ? auditRecords : [];
+
+  let transcriptGateCalls = 0;
+  let stopGateBlocks = 0;
+  let maxStepCacheReadTokens = null;
+
+  for (const step of safeSteps) {
+    if (!step || typeof step !== "object") {
+      continue;
+    }
+    if (step.type === "SYSTEM_MESSAGE" && typeof step.content === "string" && step.content.includes(GATE_STOP_MARKER)) {
+      stopGateBlocks += 1;
+    }
+    if (step.type === "PLANNER_RESPONSE") {
+      for (const call of getToolCalls(step)) {
+        if (callNameOf(call) === GATE_TOOL_NAME) {
+          transcriptGateCalls += 1;
+        }
+      }
+      const cacheTok = extractCacheReadTokenFromStep(step);
+      if (cacheTok !== null && (maxStepCacheReadTokens === null || cacheTok > maxStepCacheReadTokens)) {
+        maxStepCacheReadTokens = cacheTok;
+      }
+    }
+  }
+
+  const gateRecords = safeRecords.filter((rec) => rec.event === "gate_verify");
+  const gateVerdicts = gateRecords.map((rec) => ({
+    verdict: typeof rec.verdict === "string" ? rec.verdict : "UNKNOWN",
+    blockedRules: Array.isArray(rec.blockedRules) ? rec.blockedRules : [],
+    warnedRules: Array.isArray(rec.warnedRules) ? rec.warnedRules : [],
+    attemptInTurn: typeof rec.attemptInTurn === "number" && Number.isFinite(rec.attemptInTurn) ? rec.attemptInTurn : null,
+  }));
+
+  const stopRecords = safeRecords.filter((rec) => rec.event === "stop_decision");
+  const stopContinueDecisions = stopRecords.filter(
+    (rec) => typeof rec.decision === "string" && rec.decision.startsWith("continue"),
+  );
+  const stopContinueGateCount = stopRecords.filter(
+    (rec) => rec.decision === "continue_gate" || rec.decision === "continue_dual",
+  ).length;
+
+  let stopMaxExecutionNum = null;
+  for (const rec of stopRecords) {
+    const num = Number(rec.executionNum);
+    if (Number.isFinite(num) && (stopMaxExecutionNum === null || num > stopMaxExecutionNum)) {
+      stopMaxExecutionNum = num;
+    }
+  }
+
+  let auditCacheReadTokens = null;
+  for (const rec of safeRecords) {
+    if (rec.event !== "post_invocation" && rec.event !== "gate_verify") {
+      continue;
+    }
+    const val = rec.metrics?.cacheReadTokens;
+    if (typeof val === "number" && Number.isFinite(val)) {
+      if (auditCacheReadTokens === null || val > auditCacheReadTokens) {
+        auditCacheReadTokens = val;
+      }
+    }
+  }
+
+  const cacheReadTokens =
+    auditCacheReadTokens !== null && maxStepCacheReadTokens !== null
+      ? Math.max(auditCacheReadTokens, maxStepCacheReadTokens)
+      : (auditCacheReadTokens ?? maxStepCacheReadTokens);
+
+  const gateCallCount = gateRecords.length > 0 ? gateRecords.length : transcriptGateCalls;
+  const stopBlocks = Math.max(stopGateBlocks, stopContinueDecisions.length);
+  const preToolOverwriteDetected = detectHookOverwriteInTranscript(rawTranscript);
+  const dirtyList = Array.isArray(gitDirtyFiles) ? gitDirtyFiles : Array.from(gitDirtyFiles ?? []);
+
+  return {
+    gateCallCount,
+    gateVerdicts,
+    stopBlocks,
+    stopGateBlocks,
+    stopContinueGateCount,
+    stopMaxExecutionNum,
+    cacheReadTokens,
+    auditRecordCount: safeRecords.length,
+    auditPathUsed,
+    preToolOverwriteDetected,
+    modifiedFiles: dirtyList,
+  };
+}
+
+export function evaluateGovernanceCase(
+  testCase,
+  { steps = [], auditRecords = [], auditPathUsed = "none", hookcallerPanics = 0, rawTranscript = "", gitDirtyFiles = [] } = {},
+) {
+  const governance = summarizeGovernance({ steps, auditRecords, auditPathUsed, rawTranscript, gitDirtyFiles });
+  const failures = [];
+
+  if (hookcallerPanics > 0) {
+    failures.push(`Detected ${hookcallerPanics} hookcaller panic(s) in CLI log`);
+  }
+
+  const exp = testCase?.governanceExpectation;
+  if (!exp || typeof exp !== "object") {
+    return { ok: failures.length === 0, failures, governance };
+  }
+
+  const verdicts = governance.gateVerdicts;
+  const finalVerdict = verdicts.length > 0 ? verdicts[verdicts.length - 1] : null;
+
+  if (typeof exp.expectFinalVerdict === "string") {
+    if (!finalVerdict) {
+      failures.push(`Expected final gate verdict "${exp.expectFinalVerdict}", but no gate_verify audit record was found`);
+    } else if (finalVerdict.verdict !== exp.expectFinalVerdict) {
+      failures.push(`Expected final gate verdict "${exp.expectFinalVerdict}", got "${finalVerdict.verdict}"`);
+    }
+  }
+
+  if (typeof exp.expectRejectRule === "string") {
+    const rejectIdx = verdicts.findIndex(
+      (entry) => entry.verdict === "REJECT" && entry.blockedRules.includes(exp.expectRejectRule),
+    );
+    if (rejectIdx === -1) {
+      failures.push(`Expected a REJECT verdict with blocked rule "${exp.expectRejectRule}" in audit.jsonl`);
+    } else if (typeof exp.expectFinalVerdict === "string") {
+      const recoveredAfterReject = verdicts
+        .slice(rejectIdx + 1)
+        .some((entry) => entry.verdict === exp.expectFinalVerdict);
+      if (!recoveredAfterReject) {
+        failures.push(
+          `Expected recovery verdict "${exp.expectFinalVerdict}" after "${exp.expectRejectRule}" REJECT`,
+        );
+      }
+    }
+  }
+
+  if (exp.expectHookIntercepted === true) {
+    const intercepted = verdicts.some(
+      (entry) => entry.verdict !== "SKIPPED_NO_SESSION" && entry.attemptInTurn !== null && entry.attemptInTurn >= 1,
+    );
+    if (!intercepted) {
+      failures.push("Expected PreToolUse gate interception (non-SKIPPED_NO_SESSION gate_verify with attemptInTurn >= 1)");
+    }
+    if (rawTranscript.length > 0 && !governance.preToolOverwriteDetected) {
+      failures.push(`Expected transcript to contain "${HOOK_OVERWRITE_NEEDLE}" confirming PreToolUse argument injection`);
+    }
+  }
+
+  if (typeof exp.expectGateCallCount === "number" && governance.gateCallCount !== exp.expectGateCallCount) {
+    failures.push(`Expected gateCallCount=${exp.expectGateCallCount}, got ${governance.gateCallCount}`);
+  }
+
+  if (typeof exp.expectStopBlocks === "number" && governance.stopBlocks !== exp.expectStopBlocks) {
+    failures.push(`Expected stopBlocks=${exp.expectStopBlocks}, got ${governance.stopBlocks}`);
+  }
+
+  if (typeof exp.expectStopGateBlocks === "number" && governance.stopGateBlocks !== exp.expectStopGateBlocks) {
+    failures.push(`Expected stopGateBlocks=${exp.expectStopGateBlocks}, got ${governance.stopGateBlocks}`);
+  }
+
+  if (exp.expectStopContinueGate === true && governance.stopContinueGateCount < 1) {
+    failures.push('Expected audit.jsonl stop_decision with decision "continue_gate" (or "continue_dual")');
+  }
+
+  if (typeof exp.expectMaxStopExecutionNumBelow === "number") {
+    if (
+      governance.stopMaxExecutionNum !== null &&
+      governance.stopMaxExecutionNum >= exp.expectMaxStopExecutionNumBelow
+    ) {
+      failures.push(
+        `Expected stopMaxExecutionNum < ${exp.expectMaxStopExecutionNumBelow}, got ${governance.stopMaxExecutionNum}`,
+      );
+    }
+  }
+
+  if (exp.expectNoModifiedFiles === true && governance.modifiedFiles.length > 0) {
+    failures.push(`Expected no modified files, found: ${governance.modifiedFiles.join(", ")}`);
+  }
+
+  return { ok: failures.length === 0, failures, governance };
+}
+
 function makeErrorResult(model, testCase, error, fields = {}) {
   return {
     model,
     case: testCase.name,
     conversationId: null,
     exitCode: 1,
+    hookcallerPanics: 0,
     ...fields,
     status: "error",
     error,
@@ -787,7 +1232,9 @@ function runLiveCase(model, testCase, options, pluginManifest) {
     return makeErrorResult(model, testCase, error.message);
   }
 
-  const { runRoot, appDataDir, workspaceDir, pluginDest, env } = isolated;
+  const { runRoot, homeDir, appDataDir, workspaceDir, pluginDest, fallbackDataDir, env } = isolated;
+  const cliLogPath = join(runRoot, "agy-cli.log");
+  const pluginName = pluginManifest.name || "hstack";
   try {
     const pluginCheck = verifyIsolatedPlugin(workspaceDir, env, pluginDest, pluginManifest);
     if (!pluginCheck.ok) {
@@ -805,6 +1252,8 @@ function runLiveCase(model, testCase, options, pluginManifest) {
         "--model",
         model,
         "--dangerously-skip-permissions",
+        "--log-file",
+        cliLogPath,
         "--print-timeout",
         `${options.timeoutSeconds}s`,
         "--output-format",
@@ -822,14 +1271,24 @@ function runLiveCase(model, testCase, options, pluginManifest) {
     );
     const elapsedMs = Date.now() - startedAt;
 
+    const cliLogText = existsSync(cliLogPath) ? readFileSync(cliLogPath, "utf8") : "";
+    const hookcallerPanics = countHookcallerPanics(cliLogText);
+    const { records: auditRecords, auditPathUsed } = readIsolatedAuditRecords({
+      homeDir,
+      fallbackDataDir,
+      pluginName,
+    });
+    const gitDirtyFiles = Array.from(readGitLedger(workspaceDir).gitDirtyFiles);
+
     const exitCode = proc.status ?? 1;
     const conversationId = extractConversationId(proc.stdout || "");
     const runFields = {
       exitCode,
       elapsedMs,
+      hookcallerPanics,
       pluginVerified: true,
       loadedPlugins: pluginCheck.loadedPlugins,
-      ...(options.keepLogs ? { runDir: runRoot } : {}),
+      ...(options.keepLogs ? { runDir: runRoot, cliLogPath } : {}),
     };
 
     if (proc.error) {
@@ -862,12 +1321,28 @@ function runLiveCase(model, testCase, options, pluginManifest) {
     const rawTranscript = readFileSync(transcriptPath, "utf8");
     const steps = parseTranscriptJsonl(rawTranscript);
     const analysis = summarizeTranscript(steps, testCase);
+    const govEval = evaluateGovernanceCase(testCase, {
+      steps,
+      auditRecords,
+      auditPathUsed,
+      hookcallerPanics,
+      rawTranscript,
+      gitDirtyFiles,
+    });
 
-    const status = exitCode !== 0 ? "error" : analysis.status;
-    const error =
+    let status = exitCode !== 0 ? "error" : analysis.status;
+    let error =
       exitCode !== 0
         ? (proc.stderr || `agy exited with ${exitCode}`).trim()
         : analysis.error;
+
+    if (hookcallerPanics > 0) {
+      status = "error";
+      error = "Detected hookcaller panic(s) in CLI log";
+    } else if (!govEval.ok) {
+      status = "error";
+      error = govEval.failures.join("; ");
+    }
 
     return {
       model,
@@ -875,10 +1350,13 @@ function runLiveCase(model, testCase, options, pluginManifest) {
       conversationId,
       exitCode,
       elapsedMs,
+      hookcallerPanics,
       pluginVerified: true,
       loadedPlugins: pluginCheck.loadedPlugins,
-      ...(options.keepLogs ? { runDir: runRoot, transcriptPath } : {}),
+      ...(options.keepLogs ? { runDir: runRoot, cliLogPath, transcriptPath } : {}),
       ...analysis,
+      governance: govEval.governance,
+      ...(govEval.failures.length > 0 ? { governanceFailures: govEval.failures } : {}),
       status,
       ...(error ? { error } : {}),
     };
@@ -920,6 +1398,10 @@ function main() {
     drifted: results.filter((entry) => entry.status === "drifted").length,
     no_thinking: results.filter((entry) => entry.status === "no_thinking").length,
     error: results.filter((entry) => entry.status === "error").length,
+    totalHookcallerPanics: results.reduce(
+      (sum, entry) => sum + (typeof entry.hookcallerPanics === "number" ? entry.hookcallerPanics : 0),
+      0,
+    ),
   };
 
   const report = {
@@ -932,7 +1414,7 @@ function main() {
   };
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  if (totals.error > 0 || totals.drifted > 0 || totals.no_thinking > 0) {
+  if (totals.error > 0 || totals.drifted > 0 || totals.no_thinking > 0 || totals.totalHookcallerPanics > 0) {
     process.exitCode = 1;
   }
 }

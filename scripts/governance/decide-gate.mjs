@@ -6,6 +6,13 @@ function normalizeCommandText(cmd) {
   return typeof cmd === "string" ? cmd.trim().replace(/\s+/g, " ") : "";
 }
 
+function isCommandResolvedBy(failedNorm, passedNorm) {
+  if (failedNorm.length === 0 || passedNorm.length === 0) {
+    return false;
+  }
+  return failedNorm === passedNorm || failedNorm.startsWith(`${passedNorm} `);
+}
+
 function normalizePathList(items, cwd, gitRoot) {
   if (!Array.isArray(items)) {
     return [];
@@ -177,16 +184,35 @@ export function decideGate(input = {}, context = {}) {
   }
 
   if (hasCodeWrite && postWriteVerifications.length > 0) {
-    const latestByCommand = new Map();
-    for (const exec of postWriteVerifications) {
-      const key = normalizeCommandText(exec.command) || `__step_${exec.stepIndex}`;
-      latestByCommand.set(key, exec);
+    const unresolvedFailures = [];
+    for (let i = 0; i < postWriteVerifications.length; i += 1) {
+      const exec = postWriteVerifications[i];
+      if (exec.passed) {
+        continue;
+      }
+      const normA = normalizeCommandText(exec.command);
+      let resolvedByLaterPass = false;
+      for (let j = i + 1; j < postWriteVerifications.length; j += 1) {
+        const later = postWriteVerifications[j];
+        if (!later.passed) {
+          continue;
+        }
+        const normB = normalizeCommandText(later.command);
+        if (isCommandResolvedBy(normA, normB)) {
+          resolvedByLaterPass = true;
+          break;
+        }
+      }
+      if (!resolvedByLaterPass) {
+        unresolvedFailures.push(exec.command || "(검증 명령)");
+      }
     }
 
-    const unresolvedFailures = [];
-    for (const exec of latestByCommand.values()) {
-      if (!exec.passed) {
-        unresolvedFailures.push(exec.command || "(검증 명령)");
+    const lastVerification = postWriteVerifications[postWriteVerifications.length - 1];
+    if (lastVerification && !lastVerification.passed) {
+      const lastCmd = lastVerification.command || "(검증 명령)";
+      if (!unresolvedFailures.includes(lastCmd)) {
+        unresolvedFailures.push(lastCmd);
       }
     }
 

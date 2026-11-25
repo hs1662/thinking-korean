@@ -141,6 +141,64 @@ describe("decideGate core rules R1-R7", () => {
     assert.deepEqual(concealedPrior.details.failedVerifications, ["npm run lint"]);
   });
 
+  it("R3_CONCEALED_FAILURE resolves an earlier narrower failure when a broader superset verification passes later, but still blocks unrelated failures", () => {
+    const resolvedBySuperset = decideGate(
+      makeInput({
+        verification_runs: [{ command: "node --test", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [
+            { stepIndex: 5, command: "node --test test/app.test.mjs", kind: "verification", passed: false },
+            { stepIndex: 7, command: "node --test", kind: "verification", passed: true },
+          ],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(resolvedBySuperset.verdict, "PASS");
+    assert.deepEqual(resolvedBySuperset.blockedRules, []);
+
+    const unresolvedUnrelated = decideGate(
+      makeInput({
+        verification_runs: [{ command: "node --test", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [
+            { stepIndex: 5, command: "npm run lint", kind: "verification", passed: false },
+            { stepIndex: 7, command: "node --test", kind: "verification", passed: true },
+          ],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(unresolvedUnrelated.verdict, "REJECT");
+    assert.deepEqual(unresolvedUnrelated.blockedRules, ["R3_CONCEALED_FAILURE"]);
+    assert.deepEqual(unresolvedUnrelated.details.failedVerifications, ["npm run lint"]);
+
+    const trailingFailureBlocks = decideGate(
+      makeInput({
+        verification_runs: [{ command: "node --test", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [
+            { stepIndex: 5, command: "node --test", kind: "verification", passed: true },
+            { stepIndex: 7, command: "node --test test/app.test.mjs", kind: "verification", passed: false },
+          ],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(trailingFailureBlocks.verdict, "REJECT");
+    assert.deepEqual(trailingFailureBlocks.blockedRules, ["R3_CONCEALED_FAILURE"]);
+    assert.deepEqual(trailingFailureBlocks.details.failedVerifications, ["node --test test/app.test.mjs"]);
+  });
+
   it("R4_UNREPORTED_MODIFIED blocks when a modified file in turnWrittenFiles is omitted", () => {
     const res = decideGate(makeInput({ modified_files: ["src/app.mjs"] }), {
       ledger: makeLedger({
