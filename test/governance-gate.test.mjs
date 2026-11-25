@@ -526,3 +526,151 @@ describe("registers, pure-Korean analyzer compatibility, and audit log", () => {
     }
   });
 });
+
+describe("audit regression tests (decideGate R3 and R5)", () => {
+  it("bug #4: R5 blocks claiming pass for read_only, failed, or reverse-substring fabricated commands", () => {
+    const readOnlyClaim = decideGate(
+      makeInput({
+        modified_files: ["README.md"],
+        inspected_files: ["README.md"],
+        verification_runs: [{ command: "echo hi", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          sessionReadFiles: new Set(["README.md"]),
+          turnWrittenFiles: new Set(["README.md"]),
+          turnCodeWrittenFiles: new Set(),
+          lastWriteStepIndex: 3,
+          lastCodeWriteStepIndex: -1,
+          turnExecutions: [{ stepIndex: 5, command: "echo hi", kind: "read_only", passed: true }],
+        }),
+        gitLedger: makeGitLedger({ gitDirtyFiles: new Set(["README.md"]) }),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(readOnlyClaim.verdict, "REJECT");
+    assert.deepEqual(readOnlyClaim.blockedRules, ["R5_FABRICATED_COMMAND"]);
+
+    const failedClaimOnDocTurn = decideGate(
+      makeInput({
+        modified_files: ["README.md"],
+        inspected_files: ["README.md"],
+        verification_runs: [{ command: "npm test", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          sessionReadFiles: new Set(["README.md"]),
+          turnWrittenFiles: new Set(["README.md"]),
+          turnCodeWrittenFiles: new Set(),
+          lastWriteStepIndex: 3,
+          lastCodeWriteStepIndex: -1,
+          turnExecutions: [{ stepIndex: 5, command: "npm test", kind: "verification", passed: false }],
+        }),
+        gitLedger: makeGitLedger({ gitDirtyFiles: new Set(["README.md"]) }),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(failedClaimOnDocTurn.verdict, "REJECT");
+    assert.deepEqual(failedClaimOnDocTurn.blockedRules, ["R5_FABRICATED_COMMAND"]);
+
+    const reverseSubstringClaim = decideGate(
+      makeInput({
+        verification_runs: [{ command: "node -v && npm test", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [{ stepIndex: 5, command: "node -v", kind: "verification", passed: true }],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(reverseSubstringClaim.verdict, "REJECT");
+    assert.deepEqual(reverseSubstringClaim.blockedRules, ["R5_FABRICATED_COMMAND"]);
+
+    const bareRuntimeClaim = decideGate(
+      makeInput({
+        verification_runs: [{ command: "node", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [{ stepIndex: 5, command: "node -v", kind: "verification", passed: true }],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(bareRuntimeClaim.verdict, "REJECT");
+    assert.deepEqual(bareRuntimeClaim.blockedRules, ["R5_FABRICATED_COMMAND"]);
+
+    const validSegmentMatch = decideGate(
+      makeInput({
+        verification_runs: [{ command: "pytest", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [{ stepIndex: 5, command: "cd pkg && pytest", kind: "verification", passed: true }],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(validSegmentMatch.verdict, "PASS");
+  });
+
+  it("bug #5: R3 rejects bare runtime launcher resolution and resolves cd-prefixed failures", () => {
+    const bareNodeDoesNotResolve = decideGate(
+      makeInput({
+        verification_runs: [{ command: "node", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [
+            { stepIndex: 5, command: "node --test", kind: "verification", passed: false },
+            { stepIndex: 7, command: "node", kind: "verification", passed: true },
+          ],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(bareNodeDoesNotResolve.verdict, "REJECT");
+    assert.ok(bareNodeDoesNotResolve.blockedRules.includes("R3_CONCEALED_FAILURE"));
+
+    const bareNpxDoesNotResolve = decideGate(
+      makeInput({
+        verification_runs: [{ command: "npx", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [
+            { stepIndex: 5, command: "npx eslint src", kind: "verification", passed: false },
+            { stepIndex: 7, command: "npx", kind: "verification", passed: true },
+          ],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(bareNpxDoesNotResolve.verdict, "REJECT");
+    assert.ok(bareNpxDoesNotResolve.blockedRules.includes("R3_CONCEALED_FAILURE"));
+
+    const cdPrefixedResolves = decideGate(
+      makeInput({
+        verification_runs: [{ command: "node --test", outcome: "pass" }],
+      }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [
+            { stepIndex: 5, command: "cd /repo && node --test", kind: "verification", passed: false },
+            { stepIndex: 7, command: "node --test", kind: "verification", passed: true },
+          ],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(cdPrefixedResolves.verdict, "PASS");
+    assert.deepEqual(cdPrefixedResolves.blockedRules, []);
+  });
+});

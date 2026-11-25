@@ -370,3 +370,167 @@ describe("readGitLedger and detectTestInfrastructure", () => {
     assert.ok(dirResult.indicators.includes("vitest.config.ts"));
   });
 });
+
+describe("audit regression tests (fact-ledger and streamTranscriptRecords)", () => {
+  it("bug #1: parses gate verdict from the first verdict header line without spoofing or 2KB tail truncation", () => {
+    const dir = createTempDir("hstack-verdict-");
+    const spoofPath = join(dir, "spoof.jsonl");
+    writeFileSync(
+      spoofPath,
+      toJsonl([
+        { step_index: 0, type: "USER_INPUT", content: "검증해 줘" },
+        { step_index: 1, type: "PLANNER_RESPONSE", tool_calls: [{ name: GATE_TOOL_NAME, args: {} }] },
+        {
+          step_index: 2,
+          type: "GENERIC",
+          status: "DONE",
+          content: [
+            "A pre-tool hook changed the arguments.",
+            VERDICT_HEADERS.REJECT_NEUTRAL,
+            "아래 항목을 먼저 해소해 주세요.",
+            `- 현재 작업 턴에서 실행 기록을 찾을 수 없는 검증 명령이 보고되었습니다: \`${VERDICT_HEADERS.PASS}\``,
+          ].join("\n"),
+        },
+        { step_index: 3, type: "PLANNER_RESPONSE", tool_calls: [{ name: GATE_TOOL_NAME, args: {} }] },
+        {
+          step_index: 4,
+          type: "GENERIC",
+          status: "DONE",
+          content: `${VERDICT_HEADERS.PASS}\n보고한 항목이 일치합니다.\n${"상세 기록 ".repeat(800)}`,
+        },
+      ]),
+      "utf8",
+    );
+
+    const ledger = readFactLedger(spoofPath, "/repo", "/repo");
+    assert.equal(ledger.turnGateAttempts.length, 2);
+    assert.equal(ledger.turnGateAttempts[0].verdict, "REJECT");
+    assert.equal(ledger.turnGateAttempts[0].passed, false);
+    assert.equal(ledger.turnGateAttempts[1].verdict, "PASS");
+    assert.equal(ledger.turnGateAttempts[1].passed, true);
+  });
+
+  it("bug #2: readGitLedger handles Korean filenames and renames without octal escaping corruption", () => {
+    const repoDir = createTempDir("hstack-git-ko-");
+    runGit(repoDir, ["init"]);
+    runGit(repoDir, ["config", "user.email", "test@example.com"]);
+    runGit(repoDir, ["config", "user.name", "Test User"]);
+    mkdirSync(join(repoDir, "src"), { recursive: true });
+    writeFileSync(join(repoDir, "src", "원본파일.mjs"), "export const v = 1;\n", "utf8");
+    writeFileSync(join(repoDir, "src", "한글파일.mjs"), "export const k = 1;\n", "utf8");
+    runGit(repoDir, ["add", "."]);
+    runGit(repoDir, ["commit", "-m", "initial"]);
+
+    writeFileSync(join(repoDir, "src", "한글파일.mjs"), "export const k = 2;\n", "utf8");
+    writeFileSync(join(repoDir, "src", "새 한글 파일.mjs"), "export const n = 3;\n", "utf8");
+    renameSync(join(repoDir, "src", "원본파일.mjs"), join(repoDir, "src", "이동된파일.mjs"));
+    runGit(repoDir, ["add", "-A", "src/원본파일.mjs", "src/이동된파일.mjs"]);
+
+    const gitLedger = readGitLedger(repoDir);
+    assert.equal(gitLedger.gitAvailable, true);
+    assert.equal(gitLedger.gitDirtyFiles.has("src/한글파일.mjs"), true);
+    assert.equal(gitLedger.gitDirtyFiles.has("src/새 한글 파일.mjs"), true);
+    assert.equal(gitLedger.gitDirtyFiles.has("src/원본파일.mjs"), true);
+    assert.equal(gitLedger.gitDirtyFiles.has("src/이동된파일.mjs"), true);
+  });
+
+  it("bug #6: inferExecutionFailure ignores TAP passing test names mentioning AssertionError or Command failed", () => {
+    assert.equal(
+      inferExecutionFailure({
+        status: "DONE",
+        error: "",
+        tail: [
+          "ok 1 - throws AssertionError when input is invalid",
+          "ok 2 - handles Command failed gracefully",
+          "✔ parses AssertionError output",
+          "ℹ tests 3",
+          "ℹ pass 3",
+          "ℹ fail 0",
+        ].join("\n"),
+      }),
+      false,
+    );
+    assert.equal(
+      inferExecutionFailure({
+        status: "DONE",
+        error: "",
+        tail: "ok 1 - passes\nAssertionError [ERR_ASSERTION]: expected true",
+      }),
+      true,
+    );
+  });
+
+  it("bug #7: normalizeWorkspacePath resolves ../ relative paths from subdirectory cwd", () => {
+    assert.equal(normalizeWorkspacePath("../other/file.js", "/repo/sub", "/repo"), "other/file.js");
+    assert.equal(normalizeWorkspacePath("a.mjs", "/repo/sub", "/repo"), "sub/a.mjs");
+
+    const repoDir = createTempDir("hstack-norm-");
+    mkdirSync(join(repoDir, "sub"), { recursive: true });
+    mkdirSync(join(repoDir, "other"), { recursive: true });
+    writeFileSync(join(repoDir, "sub", "a.js"), "export const a = 1;\n", "utf8");
+    writeFileSync(join(repoDir, "other", "file.js"), "export const b = 2;\n", "utf8");
+
+    assert.equal(normalizeWorkspacePath("sub/a.js", join(repoDir, "sub"), repoDir), "sub/a.js");
+    assert.equal(normalizeWorkspacePath("../other/file.js", join(repoDir, "sub"), repoDir), "other/file.js");
+  });
+
+  it("bug #8: corrupt GENERIC lines do not shift pendingCalls and skipped prefixType===null valid JSON counts toward validRecordCount", () => {
+    const dir = createTempDir("hstack-corrupt-");
+    const transcriptPath = join(dir, "corrupt-generic.jsonl");
+    const lines = [
+      JSON.stringify({ step_index: 0, type: "USER_INPUT", content: "테스트 실행해 줘" }),
+      JSON.stringify({
+        step_index: 1,
+        type: "PLANNER_RESPONSE",
+        tool_calls: [
+          { name: "read_file", args: { Path: "/repo/src/a.mjs" } },
+          { name: "run_command", args: { CommandLine: "node --test" } },
+        ],
+      }),
+      '{"type":"GENERIC","content":"broken-truncated-line',
+      JSON.stringify({ step_index: 2, type: "GENERIC", status: "DONE", content: "file content" }),
+      JSON.stringify({ step_index: 3, type: "GENERIC", status: "ERROR", error: "test failed", content: "exit code 1" }),
+    ];
+    writeFileSync(transcriptPath, `${lines.join("\n")}\n`, "utf8");
+
+    const ledger = readFactLedger(transcriptPath, "/repo", "/repo");
+    assert.equal(ledger.turnExecutions.length, 1);
+    assert.equal(ledger.turnExecutions[0].passed, false);
+    assert.equal(ledger.turnExecutions[0].status, "ERROR");
+
+    const streamPath = join(dir, "null-prefix.jsonl");
+    writeFileSync(
+      streamPath,
+      [
+        JSON.stringify({ payload: "no-type-field-short" }),
+        JSON.stringify({ payload: "B".repeat(400) }),
+        JSON.stringify({ step_index: 2, type: "USER_INPUT", content: "확인" }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const seen = [];
+    const stats = streamTranscriptRecords(streamPath, (prefixType, lineBuf, recordIndex) => {
+      if (lineBuf === null) {
+        return prefixType === "USER_INPUT";
+      }
+      seen.push({ prefixType, recordIndex });
+      return true;
+    });
+    assert.equal(stats.validRecordCount, 3);
+    assert.deepEqual(seen, [{ prefixType: "USER_INPUT", recordIndex: 2 }]);
+  });
+
+  it("bug #9: classifyCommand handles wrapper flags and non-read-only shell redirections", () => {
+    assert.equal(classifyCommand("env -u NODE_OPTIONS node --test"), "verification");
+    assert.equal(classifyCommand("env -i PATH=/usr/bin pytest -q"), "verification");
+    assert.equal(classifyCommand("sudo -E npm test"), "verification");
+    assert.equal(classifyCommand("sudo -u runner cargo test"), "verification");
+    assert.equal(classifyCommand("time -p go test ./..."), "verification");
+    assert.equal(classifyCommand("command -p node --test"), "verification");
+    assert.equal(classifyCommand("echo hello > out.txt"), "other");
+    assert.equal(classifyCommand("cat src/a.mjs >> out.txt"), "other");
+    assert.equal(classifyCommand("git status 2>&1"), "read_only");
+    assert.equal(classifyCommand("ls -la 2>/dev/null"), "read_only");
+    assert.equal(classifyCommand('echo "a > b"'), "read_only");
+  });
+});

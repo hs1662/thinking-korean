@@ -8,6 +8,7 @@ import { analyzeField } from "../scripts/analyzer.mjs";
 import { GATE_TOOL_NAME, VERDICT_HEADERS } from "../scripts/governance/constants.mjs";
 import { decideGate } from "../scripts/governance/decide-gate.mjs";
 import { normalizeWorkspacePath } from "../scripts/governance/fact-ledger.mjs";
+import { createMcpServerHandler } from "../scripts/mcp/server.mjs";
 import { handlePreToolGate } from "../scripts/pre-tool-gate.mjs";
 import { DRIFT_MARKER, GATE_STOP_MARKER, parseDriftMarkerStep } from "../scripts/transcript.mjs";
 import {
@@ -664,5 +665,68 @@ describe("Checkpoint 3 governance polish regressions", () => {
     assert.equal(normalizeWorkspacePath(join(linkRepo, "src", "app.mjs"), linkRepo, realRepo), "src/app.mjs");
     assert.equal(normalizeWorkspacePath(join(realRepo, "src", "app.mjs"), linkRepo, realRepo), "src/app.mjs");
     assert.equal(normalizeWorkspacePath("app.mjs", join(linkRepo, "src"), realRepo), "src/app.mjs");
+  });
+
+  it("bug #3: MCP verify_completion fails open with SKIPPED_NO_SESSION when transcript is missing or empty and logs internal errors to audit.jsonl", async () => {
+    const dataDir = createTempDir("hstack-mcp-missing-tr-data-");
+    const repoDir = initTempGitRepo("hstack-mcp-missing-tr-repo-");
+    const trDir = createTempDir("hstack-mcp-missing-tr-");
+    const missingPath = join(trDir, "does-not-exist.jsonl");
+    const emptyPath = join(trDir, "empty.jsonl");
+    writeFileSync(emptyPath, "", "utf8");
+
+    const client = createMcpClient({ PLUGIN_DATA: dataDir, HSTACK_SCHEMA_REGISTER: "neutral" });
+    try {
+      await client.request("initialize", { protocolVersion: "2024-11-05" });
+      for (const transcriptPath of [missingPath, emptyPath]) {
+        const res = await client.request("tools/call", {
+          name: "verify_completion",
+          arguments: {
+            modified_files: ["src/app.mjs"],
+            inspected_files: ["src/app.mjs"],
+            verification_runs: [{ command: "node --test", outcome: "pass" }],
+            unverified_scope: [],
+            self_assessment: "수정을 완료하고 확인했습니다.",
+            _session: { conversationId: "conv-missing", transcriptPath, cwd: repoDir },
+          },
+        });
+        assert.equal(res.result.isError, false);
+        assert.ok(
+          res.result.content[0].text.startsWith(VERDICT_HEADERS.SKIPPED_NO_SESSION),
+          `expected SKIPPED_NO_SESSION for ${transcriptPath}, got:\n${res.result.content[0].text}`,
+        );
+      }
+    } finally {
+      const { exitCode, stderrText } = await client.close();
+      assert.equal(exitCode, 0);
+      assert.equal(stderrText, "");
+    }
+
+    const auditLines = readFileSync(join(dataDir, "audit.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(auditLines.length, 2);
+    assert.equal(auditLines[0].verdict, "SKIPPED_NO_SESSION");
+    assert.equal(auditLines[1].verdict, "SKIPPED_NO_SESSION");
+
+    const errDataDir = createTempDir("hstack-mcp-catch-data-");
+    const handler = createMcpServerHandler({ dataDir: errDataDir, register: "neutral" });
+    const throwingArgs = {
+      get modified_files() {
+        throw new Error("boom-from-getter");
+      },
+    };
+    const errRes = handler({
+      jsonrpc: "2.0",
+      id: 99,
+      method: "tools/call",
+      params: { name: "verify_completion", arguments: throwingArgs },
+    });
+    assert.equal(errRes.result.isError, false);
+    assert.ok(errRes.result.content[0].text.startsWith(VERDICT_HEADERS.SKIPPED_NO_SESSION));
+
+    const errAuditLines = readFileSync(join(errDataDir, "audit.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(errAuditLines.length, 1);
+    assert.equal(errAuditLines[0].event, "gate_verify");
+    assert.equal(errAuditLines[0].verdict, "SKIPPED_NO_SESSION");
+    assert.ok(errAuditLines[0].error.includes("boom-from-getter"));
   });
 });
