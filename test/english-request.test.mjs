@@ -192,6 +192,11 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "다음 문장을 영어로 옮기세요",
       "아래 문장을 영작해 줘",
       "이 내용을 자연스럽게 영작해 주세요",
+      "이 문장 영작 좀 해 줘",
+      "이 문장 영작 해 줘",
+      "이 문장 영작을 해 줘",
+      "이 문장 영작을 좀 해 줘",
+      "영작 좀 부탁해",
       "영어로 영작해 줘",
       "영작 부탁드립니다",
       "영어로 번역: 오늘 회의는 취소되었습니다.",
@@ -210,7 +215,14 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "영어로 옮기지 마",
       "영어로 옮기지 말고 한국어로 답해 줘",
       "영작하지 마",
+      "영작 좀 하지 마",
+      "영작을 좀 하지 마",
       "영작된 문장을 한국어로 설명해 줘",
+      "영어로 옮겨진 에러 메시지를 설명해 줘",
+      "영어로 옮긴 문서를 요약해 줘",
+      "영어로 옮겨 놓은 로그를 정리해 줘",
+      "영어로 옮겨 둔 텍스트를 설명해 줘",
+      "영어로 자연스럽게 옮겨진 에러 메시지를 설명해 줘",
     ]) {
       assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
     }
@@ -227,5 +239,29 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       action: "noop",
       reason: "content_exempt",
     });
+
+    const spacedCompositionSteps = [
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n이 문장 영작 좀 해 줘\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 사용자가 요청한 문장을 자연스러운 영어로 영작하자.",
+        content: "The deployment pipeline completed all verification checks successfully.",
+      }),
+    ];
+    assert.deepEqual(decideHookAction(spacedCompositionSteps), { action: "noop", reason: "ok" });
+    assert.deepEqual(decideStopAction(spacedCompositionSteps, { terminationReason: "NO_TOOL_CALL" }), {
+      action: "noop",
+      reason: "content_exempt",
+    });
+
+    const sourceParticipleSteps = [
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n영어로 옮겨진 에러 메시지를 설명해 줘\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 에러 메시지의 원인을 한국어로 파악하자.",
+        content: "This error indicates that the database connection pool timed out before acquiring a client.",
+      }),
+    ];
+    assert.equal(decideHookAction(sourceParticipleSteps).action, "inject");
+    assert.deepEqual(decideHookAction(sourceParticipleSteps).driftedFields, ["content"]);
+    assert.equal(decideStopAction(sourceParticipleSteps, { terminationReason: "NO_TOOL_CALL" }).action, "continue");
   });
 });
