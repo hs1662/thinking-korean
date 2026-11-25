@@ -34,7 +34,7 @@ function asObject(value) {
 
 function asArray(value) {
   const unwrapped = unwrapSerialized(value);
-  return Array.isArray(unwrapped) ? unwrapped.map((item) => unwrapSerialized(item)) : null;
+  return Array.isArray(unwrapped) ? unwrapped : null;
 }
 
 export function extractUiTextsFromToolCall(toolCall) {
@@ -49,8 +49,12 @@ export function extractUiTextsFromToolCall(toolCall) {
 
   const texts = [];
   const pushIfString = (raw) => {
-    const val = unwrapSerialized(raw);
-    if (typeof val === "string" && val.trim().length > 0) {
+    if (typeof raw !== "string") {
+      return;
+    }
+    const unwrapped = unwrapSerialized(raw);
+    const val = typeof unwrapped === "string" ? unwrapped : raw;
+    if (val.trim().length > 0) {
       texts.push(val.trim());
     }
   };
@@ -58,16 +62,18 @@ export function extractUiTextsFromToolCall(toolCall) {
   pushIfString(args.toolSummary);
   if (name === "update_steps" || name === "update_plan" || name === "todo_write") {
     const list = asArray(args.steps) ?? asArray(args.todos) ?? asArray(args.plan) ?? [];
-    for (const item of list) {
-      if (item && typeof item === "object") {
+    for (const rawItem of list) {
+      const item = asObject(rawItem);
+      if (item) {
         pushIfString(item.title ?? item.content ?? item.step ?? item.subject);
       }
     }
   } else if (name === "task_create" || name === "task_update") {
     pushIfString(args.subject ?? args.title);
   } else if (name === "ask_question") {
-    for (const q of asArray(args.questions) ?? []) {
-      if (q && typeof q === "object") {
+    for (const rawQ of asArray(args.questions) ?? []) {
+      const q = asObject(rawQ);
+      if (q) {
         pushIfString(q.question);
         for (const opt of asArray(q.options) ?? []) {
           pushIfString(opt);

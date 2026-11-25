@@ -1,7 +1,7 @@
 import { evaluatePlannerResponse } from "../analyzer.mjs";
 import { isExplicitEnglishOutputRequest } from "./english-request.mjs";
 import { buildCorrectionMessage, parseDriftMarkerStep } from "./markers.mjs";
-import { getToolCalls } from "./steps.mjs";
+import { deniedToolCallIndexes, getToolCalls } from "./steps.mjs";
 import {
   DEFAULT_COOLDOWN_INVOCATIONS,
   MAX_CONSECUTIVE_FAILED_THINKING,
@@ -15,12 +15,15 @@ import { extractUiTextsFromToolCalls } from "./ui-extractor.mjs";
 
 const FIELDS = ["thinking", "content", "ui"];
 
-function evaluateStep(step, analyzerOptions) {
+function evaluateStep(steps, plannerPos, analyzerOptions) {
+  const step = steps[plannerPos];
+  const deniedIndexes = deniedToolCallIndexes(steps, plannerPos);
+  const effectiveToolCalls = getToolCalls(step).filter((_call, idx) => !deniedIndexes.has(idx));
   return evaluatePlannerResponse(
     {
       thinking: typeof step.thinking === "string" ? step.thinking : "",
       content: typeof step.content === "string" ? step.content : "",
-      uiTexts: extractUiTextsFromToolCalls(getToolCalls(step)),
+      uiTexts: extractUiTextsFromToolCalls(effectiveToolCalls),
     },
     analyzerOptions,
   );
@@ -90,6 +93,9 @@ function replayTrackers(steps, ctx) {
 
     const parsedMarker = parseDriftMarkerStep(step);
     if (parsedMarker) {
+      if (parsedMarker.sourceHook === "PreToolUse") {
+        continue;
+      }
       for (const field of markerTargets(parsedMarker, lastActionable, lastEffective)) {
         const tracker = trackers[field];
         if (!tracker || isFieldCapped(field, tracker, caps)) {
@@ -108,7 +114,7 @@ function replayTrackers(steps, ctx) {
       continue;
     }
 
-    const evaluation = i === cachedIdx ? cachedEval : evaluateStep(step, analyzerOptions);
+    const evaluation = i === cachedIdx ? cachedEval : evaluateStep(steps, i, analyzerOptions);
     const effectiveDrifted = [];
     for (const field of FIELDS) {
       const tracker = trackers[field];
@@ -167,12 +173,14 @@ export function decideHookAction(steps, options = {}) {
     : userIdx !== -1
       ? isExplicitEnglishOutputRequest(steps[userIdx].content)
       : false;
-  const latestEval = evaluateStep(latestStep, analyzerOptions);
+  const latestEval = evaluateStep(steps, plannerIdx, analyzerOptions);
   const drifted = (latestEval.kind === "drifted" ? latestEval.driftedFields : []).filter(
     (field) => !(field === "content" && contentExempt),
   );
 
-  const coveredFields = new Set(trailingMarkers.flatMap((marker) => marker.fields));
+  const coveredFields = new Set(
+    trailingMarkers.filter((marker) => marker.sourceHook !== "PreToolUse").flatMap((marker) => marker.fields),
+  );
   const uncovered = drifted.filter((field) => !coveredFields.has(field));
   if (uncovered.length === 0) {
     return trailingMarkers.length > 0 ? { action: "noop", reason: "already_covered" } : { action: "noop", reason: "ok" };
