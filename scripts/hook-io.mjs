@@ -1,4 +1,5 @@
 import { closeSync, openSync, readSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -291,11 +292,21 @@ function scanJsonStringEnd(buf, openQuoteIdx) {
   return null;
 }
 
-function classifyLinePrefix(prefixBuf) {
+export function resolvePluginDataDir() {
+  for (const key of ["PLUGIN_DATA", "HSTACK_DATA_DIR"]) {
+    const raw = process.env[key];
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      return raw.trim();
+    }
+  }
+  return join(tmpdir(), "hstack-data");
+}
+
+export function extractLinePrefixType(prefixBuf) {
   const len = prefixBuf.length;
   let i = skipWhitespace(prefixBuf, 0);
   if (i >= len || prefixBuf[i] !== 0x7b) {
-    return "unknown";
+    return null;
   }
 
   let depth = 0;
@@ -306,32 +317,28 @@ function classifyLinePrefix(prefixBuf) {
     if (b === 0x22) {
       const str = scanJsonStringEnd(prefixBuf, i);
       if (!str) {
-        return "unknown";
+        return null;
       }
 
       if (depth === 1 && expectKeyAtDepth1) {
         expectKeyAtDepth1 = false;
         if (str.hasEscape) {
-          return "unknown";
+          return null;
         }
         if (str.end - i === 5 && prefixBuf.toString("latin1", i + 1, str.end) === "type") {
           let j = skipWhitespace(prefixBuf, str.end + 1);
           if (j >= len || prefixBuf[j] !== 0x3a) {
-            return "unknown";
+            return null;
           }
           j = skipWhitespace(prefixBuf, j + 1);
           if (j >= len || prefixBuf[j] !== 0x22) {
-            return "unknown";
+            return null;
           }
           const val = scanJsonStringEnd(prefixBuf, j);
           if (!val || val.hasEscape) {
-            return "unknown";
+            return null;
           }
-          const typeValue = prefixBuf.subarray(j + 1, val.end).toString("latin1");
-          if (KEPT_STEP_TYPES.has(typeValue)) {
-            return "keep";
-          }
-          return typeValue === "GENERIC" ? "probe" : "skip";
+          return prefixBuf.subarray(j + 1, val.end).toString("latin1");
         }
       }
 
@@ -360,7 +367,7 @@ function classifyLinePrefix(prefixBuf) {
     i += 1;
   }
 
-  return "unknown";
+  return null;
 }
 
 function stripBomBytes(buf, isFirstLine) {
@@ -368,46 +375,52 @@ function stripBomBytes(buf, isFirstLine) {
   return hasBom ? buf.subarray(3) : buf;
 }
 
-function readTranscriptStepsFast(filePath) {
+function isBlankAsciiBuffer(buf) {
+  for (let i = 0; i < buf.length; i += 1) {
+    if (!isAsciiWhitespace(buf[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isValidSkippedShortLine(buf, prefixType) {
+  if (prefixType === null) {
+    return false;
+  }
+  const state = createJsonObjectValidator();
+  advanceJsonObjectValidator(state, buf, 0, buf.length);
+  return isValidJsonObjectComplete(state);
+}
+
+/**
+ * Streams a JSONL transcript file in 256KiB chunks without loading huge skipped lines into memory.
+ *
+ * Visitor contract:
+ * 1. Peek phase: `visitor(prefixType, null)` is called once the top-level `"type"` is scanned from the
+ *    first 256 bytes (or for short lines <= 256B, before delivery).
+ *    - Return `false` to skip the line without buffering or JSON.parse (the line is still validated in
+ *      O(1) memory so `validRecordCount` stays exact).
+ *    - Return a positive finite number to buffer the line up to that byte cap and drop to skip mode if exceeded.
+ *    - Return anything else to buffer the full line.
+ * 2. Record phase: `visitor(prefixType, lineBuf, recordIndex)` receives a Buffer (UTF-8 BOM stripped on line 1)
+ *    and the 0-based count of valid JSON records seen before this line. Return `false` if the record was NOT a
+ *    valid tracked JSON object; otherwise `validRecordCount` is incremented.
+ */
+export function streamTranscriptRecords(filePath, visitor) {
   const fd = openSync(filePath, "r");
   const chunk = Buffer.allocUnsafe(CHUNK_SIZE);
   const prefixBuf = Buffer.allocUnsafe(PREFIX_SCAN_BYTES);
 
-  const steps = [];
   let validRecordCount = 0;
   let lineState = "undecided";
+  let linePrefixType = null;
+  let lineByteLimit = Infinity;
   let prefixLen = 0;
   let lineChunks = [];
   let lineBytes = 0;
   let skipValidator = null;
   let isFirstLine = true;
-
-  const pushParsed = (rawLine) => {
-    const parsed = parseRawRecord(rawLine);
-    if (!parsed) {
-      return;
-    }
-    const step = recordToStep(parsed, validRecordCount);
-    validRecordCount += 1;
-    if (step) {
-      steps.push(step);
-    }
-  };
-
-  const probeLine = (buf) => {
-    const text = buf.toString("utf8");
-    const parsed = parseRawRecord(text);
-    if (!parsed) {
-      return;
-    }
-    if (text.toLowerCase().includes(PRE_TOOL_DENIAL_NEEDLE) && isPreToolDenialStep(parsed)) {
-      const step = recordToStep(parsed, validRecordCount);
-      if (step) {
-        steps.push(step);
-      }
-    }
-    validRecordCount += 1;
-  };
 
   const startSkipValidator = (buffers) => {
     skipValidator = createJsonObjectValidator();
@@ -417,13 +430,25 @@ function readTranscriptStepsFast(filePath) {
     }
   };
 
+  const applyPeekDecision = (prefixSlice, decision) => {
+    if (decision === false) {
+      lineState = "skip";
+      startSkipValidator([prefixSlice]);
+      return;
+    }
+    lineState = "keep";
+    lineByteLimit = typeof decision === "number" && Number.isFinite(decision) && decision > 0 ? decision : Infinity;
+    lineChunks = [Buffer.from(prefixSlice)];
+    lineBytes = prefixSlice.length;
+  };
+
   const appendSegment = (view, start, end) => {
     if (start >= end) {
       return;
     }
-    if (lineState === "probe") {
+    if (lineByteLimit !== Infinity) {
       lineBytes += end - start;
-      if (lineBytes > PROBE_MAX_BYTES) {
+      if (lineBytes > lineByteLimit) {
         lineState = "skip";
         startSkipValidator(lineChunks);
         advanceJsonObjectValidator(skipValidator, view, start, end);
@@ -434,37 +459,44 @@ function readTranscriptStepsFast(filePath) {
     lineChunks.push(Buffer.from(view.subarray(start, end)));
   };
 
+  const deliverLine = (prefixType, buf) => {
+    const accepted = visitor(prefixType, buf, validRecordCount);
+    if (accepted !== false) {
+      validRecordCount += 1;
+    }
+  };
+
   const finalizeLine = () => {
     if (lineState === "skip") {
-      if (isValidJsonObjectComplete(skipValidator)) {
+      if (linePrefixType !== null && isValidJsonObjectComplete(skipValidator)) {
         validRecordCount += 1;
       }
     } else if (lineState === "undecided") {
       const prefixSlice = stripBomBytes(prefixBuf.subarray(0, prefixLen), isFirstLine);
-      const rawLine = prefixSlice.toString("utf8");
-      if (rawLine.trim().length > 0) {
-        const classification = classifyLinePrefix(prefixSlice);
-        if (classification === "skip") {
-          if (parseRawRecord(rawLine)) {
+      if (!isBlankAsciiBuffer(prefixSlice)) {
+        const prefixType = extractLinePrefixType(prefixSlice);
+        const decision = visitor(prefixType, null);
+        if (decision === false) {
+          if (isValidSkippedShortLine(prefixSlice, prefixType)) {
             validRecordCount += 1;
           }
-        } else if (classification === "probe") {
-          probeLine(prefixSlice);
+        } else if (typeof decision === "number" && Number.isFinite(decision) && decision > 0 && prefixSlice.length > decision) {
+          if (isValidSkippedShortLine(prefixSlice, prefixType)) {
+            validRecordCount += 1;
+          }
         } else {
-          pushParsed(rawLine);
+          deliverLine(prefixType, prefixSlice);
         }
       }
     } else if (lineChunks.length > 0) {
       const joined = lineChunks.length === 1 ? lineChunks[0] : Buffer.concat(lineChunks);
-      if (lineState === "probe") {
-        probeLine(joined);
-      } else {
-        pushParsed(joined.toString("utf8"));
-      }
+      deliverLine(linePrefixType, joined);
     }
 
     isFirstLine = false;
     lineState = "undecided";
+    linePrefixType = null;
+    lineByteLimit = Infinity;
     prefixLen = 0;
     lineChunks = [];
     lineBytes = 0;
@@ -489,19 +521,14 @@ function readTranscriptStepsFast(filePath) {
           prefixLen += copyLen;
           pos += copyLen;
           if (prefixLen === PREFIX_SCAN_BYTES && (pos < segEnd || nlIdx === -1)) {
-            const classification = classifyLinePrefix(stripBomBytes(prefixBuf, isFirstLine));
-            lineState = classification === "skip" || classification === "probe" ? classification : "keep";
-            if (lineState === "skip") {
-              startSkipValidator([prefixBuf]);
-            } else {
-              lineChunks = [Buffer.from(prefixBuf)];
-              lineBytes = PREFIX_SCAN_BYTES;
-            }
+            const prefixSlice = stripBomBytes(prefixBuf, isFirstLine);
+            linePrefixType = extractLinePrefixType(prefixSlice);
+            applyPeekDecision(prefixSlice, visitor(linePrefixType, null));
           }
         }
         if (lineState === "skip") {
           advanceJsonObjectValidator(skipValidator, view, pos, segEnd);
-        } else if (lineState === "keep" || lineState === "probe") {
+        } else if (lineState === "keep") {
           appendSegment(view, pos, segEnd);
         }
         pos = segEnd;
@@ -518,7 +545,43 @@ function readTranscriptStepsFast(filePath) {
     closeSync(fd);
   }
 
-  return { hasContent: validRecordCount > 0, steps };
+  return { hasContent: validRecordCount > 0, validRecordCount };
+}
+
+function readTranscriptStepsFast(filePath) {
+  const steps = [];
+  const { hasContent } = streamTranscriptRecords(filePath, (prefixType, lineBuf, recordIndex) => {
+    if (lineBuf === null) {
+      if (prefixType === null || KEPT_STEP_TYPES.has(prefixType)) {
+        return true;
+      }
+      return prefixType === "GENERIC" ? PROBE_MAX_BYTES : false;
+    }
+
+    const rawLine = lineBuf.toString("utf8");
+    const parsed = parseRawRecord(rawLine);
+    if (!parsed) {
+      return false;
+    }
+
+    if (prefixType === "GENERIC") {
+      if (rawLine.toLowerCase().includes(PRE_TOOL_DENIAL_NEEDLE) && isPreToolDenialStep(parsed)) {
+        const step = recordToStep(parsed, recordIndex);
+        if (step) {
+          steps.push(step);
+        }
+      }
+      return true;
+    }
+
+    const step = recordToStep(parsed, recordIndex);
+    if (step) {
+      steps.push(step);
+    }
+    return true;
+  });
+
+  return { hasContent, steps };
 }
 
 export function resolveTranscriptCandidates(transcriptPath) {
