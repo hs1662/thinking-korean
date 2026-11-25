@@ -374,7 +374,7 @@ export function isExplicitEnglishOutputRequest(rawText) {
   const { unnegated, negatedLangs } = stripNegatedClausesAndCollectLangs(normalizedBody);
 
   const sentences = [];
-  for (const rawPart of unnegated.split(/(?<=\?)(?!\?)|[.!…\n]+/)) {
+  for (const rawPart of unnegated.split(/(?<=\?)(?!\?)[.!…\n]*|[.!…\n]+/)) {
     const trimmed = rawPart.trim();
     if (trimmed.length === 0) {
       continue;
