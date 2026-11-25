@@ -79,7 +79,7 @@ const EN_IMPERATIVE_REQUEST_RE = new RegExp(
 );
 
 const EN_POLITE_REQUEST_RE = new RegExp(
-  `\\b(?:can\\s+you|could\\s+you|would\\s+you|will\\s+you|please|i\\s+(?:want|need|would\\s+like)(?:\\s+you)?\\s+to|i['’]d\\s+like(?:\\s+you)?\\s+to)\\s+(?:(?:please|kindly|just)\\s+)*${EN_ACTION_BODY}` +
+  `\\b(?:can\\s+you|could\\s+you|would\\s+you|will\\s+you|please|i\\s+(?:want|need|would\\s+like)(?:\\s+you)?\\s+to|i['’]d\\s+like(?:\\s+you)?\\s+to)\\s+(?:(?:please|kindly|just)\\s+){0,3}${EN_ACTION_BODY}` +
     `|\\b(?:i\\s+(?:want|need|would\\s+like)|i['’]d\\s+like)\\s+(?:(?:an?|the|some)\\s+)?(?:[a-z]+\\s+){0,2}${FOREIGN_LANG_EN}\\s+${EN_OUTPUT_NOUNS}\\b`,
   "i",
 );
