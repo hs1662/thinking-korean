@@ -231,6 +231,22 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "영어로 옮긴 답장 정리 좀 해 줘",
       "영어로 옮겨 놓은 거 요약 좀 해 줘",
       "영어로 옮겨 둔 거 설명 해 줘",
+      "영어로 옮긴거 요약해 줘",
+      "영어로 옮긴걸 설명해 줘",
+      "영어로 옮긴것 정리해 줘",
+      "영어로 옮긴건 요약해 줘",
+      "영어로 옮긴게 뭔지 설명해 줘",
+      "영어로 옮겨 놓은거 요약해 줘",
+      "영어로 옮겨놓은걸 설명해 줘",
+      "영어로 옮겨 둔거 정리해 줘",
+      "영어로 옮겨둔걸 설명해 줘",
+      "영어로 자연스럽게 옮겨진거 설명해 줘",
+      "영어로 옮겼던 거 요약해 줘",
+      "영어로 옮겼던거 요약해 줘",
+      "영어로 옮겨 준 거 설명해 줘",
+      "영어로 옮겨준거 설명해 줘",
+      "영어로 옮겨놨던 거 정리해 줘",
+      "영어로 옮겨놨던거 정리해 줘",
     ]) {
       assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
     }
@@ -271,5 +287,16 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(decideHookAction(sourceParticipleSteps).action, "inject");
     assert.deepEqual(decideHookAction(sourceParticipleSteps).driftedFields, ["content"]);
     assert.equal(decideStopAction(sourceParticipleSteps, { terminationReason: "NO_TOOL_CALL" }).action, "continue");
+
+    const boundNounParticipleSteps = [
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n영어로 옮긴거 요약해 줘\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 옮긴 내용을 한국어로 요약하자.",
+        content: "Here is a concise summary of the translated document in English.",
+      }),
+    ];
+    assert.equal(decideHookAction(boundNounParticipleSteps).action, "inject");
+    assert.deepEqual(decideHookAction(boundNounParticipleSteps).driftedFields, ["content"]);
+    assert.equal(decideStopAction(boundNounParticipleSteps, { terminationReason: "NO_TOOL_CALL" }).action, "continue");
   });
 });
