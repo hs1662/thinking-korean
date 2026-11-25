@@ -10,20 +10,46 @@ const METADATA_TAGS = [
 const QUOTE_LINE_RE = /^[ \t]*>.*$/gm;
 const SHORT_ENGLISH_REQUEST_RE = /^(?:(?:in\s+)?english,?\s+please|in\s+english|영어로요?)\s*[.!]*$/i;
 
-const FOREIGN_LANG_KO = "(?:영어|영문|프랑스어|독일어|스페인어|이탈리아어|포르투갈어|외국어)";
-const FOREIGN_LANG_EN = "(?:english|french|german|spanish|italian|portuguese)";
+const FOREIGN_LANG_KO = "(?:영어|영문|프랑스어|독일어|스페인어|이탈리아어|포르투갈어|일본어|일어|일문|중국어|중문|외국어)";
+const FOREIGN_LANG_EN = "(?:english|french|german|spanish|italian|portuguese|japanese|chinese)";
+const FOREIGN_LANG_TOKEN_RE = new RegExp(`(?:${FOREIGN_LANG_KO}|\\b${FOREIGN_LANG_EN}\\b|영작)`, "gi");
+const LANG_CANONICAL_MAP = new Map([
+  ["영어", "en"],
+  ["영문", "en"],
+  ["영작", "en"],
+  ["english", "en"],
+  ["프랑스어", "fr"],
+  ["french", "fr"],
+  ["독일어", "de"],
+  ["german", "de"],
+  ["스페인어", "es"],
+  ["spanish", "es"],
+  ["이탈리아어", "it"],
+  ["italian", "it"],
+  ["포르투갈어", "pt"],
+  ["portuguese", "pt"],
+  ["일본어", "ja"],
+  ["일어", "ja"],
+  ["일문", "ja"],
+  ["japanese", "ja"],
+  ["중국어", "zh"],
+  ["중문", "zh"],
+  ["chinese", "zh"],
+  ["외국어", "foreign"],
+]);
 
 const KO_REQUEST_NOUN_ACTION = "(?:번역|영작|작성|답변|대답|답장|응답|설명|요약|정리|출력|변환|표현|교정)";
 const KO_REQUEST_NOUN_ENDING =
-  "(?:해\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|주시기|주길|라|달라|보여\\s*줘|보여주세요)|해서\\s*(?:(?:보여|알려)\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|달라|라)|보여주세요|보여줘|알려주세요|알려줘)|해주세요|해줘|해라|하라|하시오|하십시오|하세요|하길\\s*바라|하기\\s*바라|하기를\\s*바라|하길\\s*원해|하기\\s*원해|하기를\\s*원해|(?:[을를]\\s*|(?<=\\s))(?:원해|원해요|원합니다|바라|바래|바랍니다)|(?:[을를]\\s*)?부탁(?:해|해요|합니다|드립니다|드려요)?|해(?=$|[.!?,])|해요(?=$|[.!?,\\s])|:(?=$|\\s))";
+  "(?:해\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|주시기|주길|라|달라|보여\\s*줘|보여주세요)|해서\\s*(?:(?:보여|알려)\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|달라|라)|보여주세요|보여줘|알려주세요|알려줘)|해주세요|해줘|해라|하라|하시오|하십시오|하세요|하고(?=,|\\s)|하길\\s*바라|하기\\s*바라|하기를\\s*바라|하길\\s*원해|하기\\s*원해|하기를\\s*원해|(?:[을를]\\s*|(?<=\\s))(?:원해|원해요|원합니다|바라|바래|바랍니다)|(?:[을를]\\s*)?부탁(?:해|해요|합니다|드립니다|드려요)?|해(?=$|[.!?,])|해요(?=$|[.!?,\\s])|:(?=$|\\s))";
 const KO_REQUEST_VERB_CONJ =
   "(?:(?:답해|바꿔|바꾸어|옮겨|옮기어|써|적어|말해|고쳐|다시\\s*써|만들어|알려|보여)(?:\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|주길|달라|라)|(?=$|[.!?,])|요(?=$|[.!?,\\s]))|(?:답하|바꾸|옮기|쓰|적|말하|고치|만들|알리|보이)(?:라|세요|시오|십시오|길\\s*바라|기\\s*바라|기를\\s*바라|길\\s*원해|기\\s*원해|기를\\s*원해)|(?:해\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|달라|라)|해주세요|해줘|해라|부탁(?:해|해요|합니다|드립니다|드려요)?))";
 const KO_SHORT_VERB_ENDING = "(?:만들어|써|적어|보여|해)\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|라|달라)|해주세요|해줘|해라|부탁(?:해|해요|합니다|드립니다|드려요)?";
 
 const KO_NEGATED_TRANSLATION_RE = new RegExp(
-  `${FOREIGN_LANG_KO}(?:으로|로)?\\s*(?:(?<=\\s)[가-힣A-Za-z0-9]{1,32}\\s+){0,2}(?:번역|영작|작성|답변|대답|답|답장|응답|설명|요약|정리|출력|변환|교정|쓰|적|말|표현|바꾸|옮기|알려\\s*주|알리|보여\\s*주|하)(?:하|해|해서\\s*(?:보여\\s*주|알려\\s*주)|은|는|을|를)?(?:\\s*좀)?\\s*(?:지\\s*(?:말|마|않)|하지\\s*(?:말|마|않)|하면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|말고|금지|대신)` +
+  `${FOREIGN_LANG_KO}(?:으로|로)?\\s*(?:(?<=\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:번역|영작|작성|답변|대답|답|답장|응답|설명|요약|정리|출력|변환|교정|쓰|적|말|표현|바꾸|옮기|알려\\s*주|알리|보여\\s*주|하)(?:하|해|해서\\s*(?:보여\\s*주|알려\\s*주)|은|는|을|를)?(?:\\s*좀)?\\s*(?:지\\s*(?:말|마|않)|하지\\s*(?:말|마|않)|하면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|말고|금지|대신)` +
     `|영작(?:하|해|은|는|을|를)?(?:\\s*좀)?\\s*(?:지\\s*(?:말|마|않)|하지\\s*(?:말|마|않)|하면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|말고|금지|대신)` +
     `|${FOREIGN_LANG_KO}(?:으로|로)?\\s*(?:말고|대신|아닌|아니라)`,
+  "g",
 );
 
 const KO_DESCRIPTIVE_OR_COMPLAINT_RE = new RegExp(
@@ -32,8 +58,15 @@ const KO_DESCRIPTIVE_OR_COMPLAINT_RE = new RegExp(
 );
 const DESCRIPTIVE_MASK = " § ";
 
+const KO_REASONING_KOREAN_RE = new RegExp(
+  `(?:내부\\s*)?(?:추론|사고|생각|작업\\s*단계|단계\\s*제목|체크리스트)(?:\\s*과정)?(?:[은는을를이가])?\\s*(?:한국어|한글|국문)로\\s*(?:(?<=\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:(?:작성|유지|진행|출력|처리)\\s*${KO_REQUEST_NOUN_ENDING}|(?:해\\s*(?:줘|줘요|주세요)|해주세요|해줘|해라|하세요|하시오|하십시오))`,
+  "g",
+);
+const EN_REASONING_KOREAN_RE =
+  /\b(?:keep|do|write|leave)\s+(?:(?:your|the|internal)\s+)?(?:thinking|reasoning|thoughts?|steps?|checklists?)\s+(?:in|into)\s+korean\b/gi;
+
 const KO_KOREAN_OUTPUT_REQUEST_RE = new RegExp(
-  `(?:한국어|한글|국문)로\\s*(?:(?<=\\s)[가-힣A-Za-z0-9]{1,32}\\s+){0,2}(?:(?:요약|분석|설명|작성|정리|번역|출력|답변|대답|응답)\\s*${KO_REQUEST_NOUN_ENDING}|(?:고쳐|말해|답해|답하|써|바꿔|옮겨|옮기|알려|보여)(?:\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|라|달라)|세요|시오|십시오|(?=$|[.!?,])|요(?=$|[.!?,\\s]))|(?:해\\s*(?:줘|줘요|주세요)|해주세요|해줘|해라))`,
+  `(?:한국어|한글|국문)로\\s*(?:(?<=\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:(?:요약|분석|설명|작성|정리|번역|출력|답변|대답|응답)\\s*${KO_REQUEST_NOUN_ENDING}|(?:고쳐|말해|답해|답하|써|바꿔|옮겨|옮기|알려|보여)(?:\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|라|달라)|세요|시오|십시오|(?=$|[.!?,])|요(?=$|[.!?,\\s]))|(?:해\\s*(?:줘|줘요|주세요)|해주세요|해줘|해라))`,
 );
 
 const KO_INTERMEDIATE_BLOCKLIST_RE =
@@ -46,14 +79,15 @@ const KO_SOURCE_OBJECT_RE =
 const KO_CONSUME_ACTIONS = new Set(["설명", "요약", "정리"]);
 
 const KO_LANG_RO_REQUEST_RE = new RegExp(
-  `${FOREIGN_LANG_KO}(?:으로|로)\\s*((?:(?<=\\s)(?!${FOREIGN_LANG_KO}(?:으로|로)\\s)[가-힣A-Za-z0-9,·-]{1,32}\\s+){0,4})(?:(${KO_REQUEST_NOUN_ACTION})(?:\\s*[을를])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}|${KO_REQUEST_VERB_CONJ})`,
+  `(${FOREIGN_LANG_KO})(?:으로|로)\\s*((?:(?<=\\s)(?!${FOREIGN_LANG_KO}(?:으로|로)\\s)[가-힣A-Za-z0-9,·/_-]{1,32}\\s+){0,4})(?:(${KO_REQUEST_NOUN_ACTION})(?:\\s*[을를])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}|${KO_REQUEST_VERB_CONJ})`,
   "g",
 );
 
 const KO_NOUN_MODIFIER_REQUEST_RE = new RegExp(
-  `(?:영어|영문)\\s+(?:(?![가-힣A-Za-z0-9]{0,32}[을를]\\s)[가-힣A-Za-z0-9]{1,32}\\s+){0,2}(?:번역(?:본|문)?|초안|버전|이메일|메일|문장|답장|요약본|요약문)(?:(?:을|를)?\\s*(?:(?:작성|번역|출력|제공|생성)\\s*${KO_REQUEST_NOUN_ENDING}|${KO_SHORT_VERB_ENDING})|\\s*:(?=$|\\s))` +
-    `|(?:영어|영문)\\s*요약(?:(?:을|를)?\\s*(?:작성|출력)\\s*${KO_REQUEST_NOUN_ENDING}|\\s*:(?=$|\\s))` +
-    `|영작(?:\\s*[을를])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}`,
+  `(${FOREIGN_LANG_KO})\\s+(?:(?![가-힣A-Za-z0-9·/_-]{0,32}[을를]\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:번역(?:본|문)?|초안|버전|이메일|메일|문장|답장|요약본|요약문)(?:(?:을|를)?\\s*(?:(?:작성|번역|출력|제공|생성)\\s*${KO_REQUEST_NOUN_ENDING}|${KO_SHORT_VERB_ENDING})|\\s*:(?=$|\\s))` +
+    `|(${FOREIGN_LANG_KO})\\s*요약(?:(?:을|를)?\\s*(?:작성|출력)\\s*${KO_REQUEST_NOUN_ENDING}|\\s*:(?=$|\\s))` +
+    `|(영작)(?:\\s*[을를])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}`,
+  "g",
 );
 
 const EN_OUTPUT_NOUNS = "(?:translation|version|draft|response|reply|summary|email|mail|message)";
@@ -64,7 +98,7 @@ const EN_NEGATED_OUTPUT_RE = new RegExp(
     `|\\binstead\\s+of\\b[^.!?\\n,;]{0,30}\\b${FOREIGN_LANG_EN}\\b` +
     `|\\bnot\\s+(?:in|into|to)\\s+${FOREIGN_LANG_EN}\\b` +
     `|\\bnot\\s+(?:an?\\s+)?(?:[a-z]+\\s+){0,2}${FOREIGN_LANG_EN}\\s+${EN_OUTPUT_NOUNS}\\b`,
-  "i",
+  "gi",
 );
 
 const EN_NARRATIVE_COMPLAINT_RE =
@@ -77,31 +111,44 @@ const EN_ACTION_BODY =
 
 const EN_IMPERATIVE_REQUEST_RE = new RegExp(
   `(?:^|(?:[,;]\\s*|\\b(?:and|then|so)\\s+))(?:(?:please|kindly|just|now|only|always)\\s+)*${EN_ACTION_BODY}`,
-  "i",
+  "gi",
 );
 
 const EN_POLITE_REQUEST_RE = new RegExp(
   `\\b(?:can\\s+you|could\\s+you|would\\s+you|will\\s+you|please|i\\s+(?:want|need|would\\s+like)(?:\\s+you)?\\s+to|i['’]d\\s+like(?:\\s+you)?\\s+to)\\s+(?:(?:please|kindly|just)\\s+){0,3}${EN_ACTION_BODY}` +
     `|\\b(?:i\\s+(?:want|need|would\\s+like)|i['’]d\\s+like)\\s+(?:(?:an?|the|some)\\s+)?(?:[a-z]+\\s+){0,2}${FOREIGN_LANG_EN}\\s+${EN_OUTPUT_NOUNS}\\b`,
-  "i",
+  "gi",
 );
 
 const EN_DIRECT_TRANSLATION_NOUN_RE = new RegExp(
   `^\\s*(?:please\\s+)?(?:an?\\s+)?${FOREIGN_LANG_EN}\\s+translation(?:\\s+(?:please|only))?\\s*[:.]?$`,
-  "i",
+  "gi",
 );
 
 const EN_KOREAN_OUTPUT_REQUEST_RE =
   /\b(?:reply|respond|answer|write|explain|summarize|translate|output|speak|talk)\b[^.!?\n]{0,40}\b(?:in|into|to)\s+korean\b/i;
 
+const INTERNAL_DOT_RE = /(?<=[A-Za-z0-9])\.(?=[A-Za-z0-9])/g;
+
+function extractLanguageCodes(text) {
+  const langs = new Set();
+  for (const match of text.matchAll(FOREIGN_LANG_TOKEN_RE)) {
+    const code = LANG_CANONICAL_MAP.get(match[0].toLowerCase());
+    if (code) {
+      langs.add(code);
+    }
+  }
+  return langs;
+}
+
 function unwrapUserRequest(stripped) {
   const lower = stripped.toLowerCase();
-  if (
-    lower.startsWith(USER_REQUEST_OPEN) &&
-    lower.endsWith(USER_REQUEST_CLOSE) &&
-    stripped.length >= USER_REQUEST_OPEN.length + USER_REQUEST_CLOSE.length
-  ) {
-    return stripped.slice(USER_REQUEST_OPEN.length, stripped.length - USER_REQUEST_CLOSE.length).trim();
+  if (!lower.startsWith(USER_REQUEST_OPEN)) {
+    return stripped;
+  }
+  const closeIdx = lower.lastIndexOf(USER_REQUEST_CLOSE);
+  if (closeIdx >= USER_REQUEST_OPEN.length) {
+    return stripped.slice(USER_REQUEST_OPEN.length, closeIdx).trim();
   }
   return stripped;
 }
@@ -181,52 +228,82 @@ function isSourceDescription(intermediate, action) {
   return KO_SOURCE_OBJECT_RE.test(intermediate) || KO_CONSUME_ACTIONS.has(resolvedAction);
 }
 
-function hasValidKoreanEnglishRequest(sentence) {
-  if (KO_NEGATED_TRANSLATION_RE.test(sentence) || KO_KOREAN_OUTPUT_REQUEST_RE.test(sentence)) {
-    return false;
+function collectKoreanEnglishRequestLangs(sentence) {
+  const langs = new Set();
+  if (KO_KOREAN_OUTPUT_REQUEST_RE.test(sentence)) {
+    return langs;
   }
   const masked = sentence.replace(KO_DESCRIPTIVE_OR_COMPLAINT_RE, DESCRIPTIVE_MASK);
 
   for (const match of masked.matchAll(KO_LANG_RO_REQUEST_RE)) {
-    const intermediate = (match[1] ?? "").trim();
-    if (intermediate.length === 0) {
-      return true;
+    const intermediate = (match[2] ?? "").trim();
+    if (intermediate.length === 0 || (!KO_INTERMEDIATE_BLOCKLIST_RE.test(intermediate) && !isSourceDescription(intermediate, match[3] ?? ""))) {
+      const code = LANG_CANONICAL_MAP.get((match[1] ?? "").toLowerCase());
+      if (code) {
+        langs.add(code);
+      }
     }
-    if (KO_INTERMEDIATE_BLOCKLIST_RE.test(intermediate) || isSourceDescription(intermediate, match[2] ?? "")) {
-      continue;
-    }
-    return true;
   }
 
-  return KO_NOUN_MODIFIER_REQUEST_RE.test(masked);
+  for (const match of masked.matchAll(KO_NOUN_MODIFIER_REQUEST_RE)) {
+    const token = match[1] ?? match[2] ?? match[3] ?? "";
+    const code = LANG_CANONICAL_MAP.get(token.toLowerCase());
+    if (code) {
+      langs.add(code);
+    }
+  }
+
+  return langs;
 }
 
-function hasValidEnglishRequestClause(clause) {
-  if (EN_NEGATED_OUTPUT_RE.test(clause) || EN_NARRATIVE_COMPLAINT_RE.test(clause)) {
-    return false;
+function collectEnglishRequestClauseLangs(clause) {
+  const langs = new Set();
+  if (EN_NARRATIVE_COMPLAINT_RE.test(clause)) {
+    return langs;
   }
-  return (
-    EN_IMPERATIVE_REQUEST_RE.test(clause) ||
-    EN_POLITE_REQUEST_RE.test(clause) ||
-    EN_DIRECT_TRANSLATION_NOUN_RE.test(clause)
-  );
+  for (const re of [EN_IMPERATIVE_REQUEST_RE, EN_POLITE_REQUEST_RE, EN_DIRECT_TRANSLATION_NOUN_RE]) {
+    for (const match of clause.matchAll(re)) {
+      for (const code of extractLanguageCodes(match[0])) {
+        langs.add(code);
+      }
+    }
+  }
+  return langs;
 }
 
-function hasValidEnglishRequest(sentence) {
-  if (EN_NEGATED_OUTPUT_RE.test(sentence)) {
-    return false;
-  }
-  if (hasValidEnglishRequestClause(sentence)) {
-    return true;
+function collectEnglishRequestLangs(sentence) {
+  const direct = collectEnglishRequestClauseLangs(sentence);
+  if (direct.size > 0) {
+    return direct;
   }
   const clauses = sentence
     .split(/(?:,\s*(?:so|but|and)\s+|;\s*|\b(?:so|but)\s+)/i)
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
   if (clauses.length <= 1) {
-    return false;
+    return direct;
   }
-  return clauses.some((clause) => hasValidEnglishRequestClause(clause));
+  const combined = new Set();
+  for (const clause of clauses) {
+    for (const code of collectEnglishRequestClauseLangs(clause)) {
+      combined.add(code);
+    }
+  }
+  return combined;
+}
+
+function stripNegatedClausesAndCollectLangs(text) {
+  const negatedLangs = new Set();
+  const maskNegation = (match) => {
+    for (const code of extractLanguageCodes(match)) {
+      negatedLangs.add(code);
+    }
+    return DESCRIPTIVE_MASK;
+  };
+  const unnegated = text
+    .replace(KO_NEGATED_TRANSLATION_RE, maskNegation)
+    .replace(EN_NEGATED_OUTPUT_RE, maskNegation);
+  return { unnegated, negatedLangs };
 }
 
 export function isExplicitEnglishOutputRequest(rawText) {
@@ -237,20 +314,34 @@ export function isExplicitEnglishOutputRequest(rawText) {
   if (SHORT_ENGLISH_REQUEST_RE.test(body)) {
     return true;
   }
-  if (KO_NEGATED_TRANSLATION_RE.test(body) || EN_NEGATED_OUTPUT_RE.test(body)) {
-    return false;
-  }
 
-  const sentences = body
+  const normalizedBody = body
+    .replace(INTERNAL_DOT_RE, "·")
+    .replace(KO_REASONING_KOREAN_RE, DESCRIPTIVE_MASK)
+    .replace(EN_REASONING_KOREAN_RE, DESCRIPTIVE_MASK);
+  const { unnegated, negatedLangs } = stripNegatedClausesAndCollectLangs(normalizedBody);
+
+  const sentences = unnegated
     .split(/[.!?\n]+/)
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
-  const hasPositiveRequest = sentences.some(
-    (sentence) => hasValidKoreanEnglishRequest(sentence) || hasValidEnglishRequest(sentence),
-  );
-  if (!hasPositiveRequest) {
+  const requestedLangs = new Set();
+  for (const sentence of sentences) {
+    for (const code of collectKoreanEnglishRequestLangs(sentence)) {
+      requestedLangs.add(code);
+    }
+    for (const code of collectEnglishRequestLangs(sentence)) {
+      requestedLangs.add(code);
+    }
+  }
+
+  if (negatedLangs.has("foreign")) {
+    return false;
+  }
+  const activeRequestedLangs = [...requestedLangs].filter((code) => !negatedLangs.has(code));
+  if (activeRequestedLangs.length === 0) {
     return false;
   }
 
-  return !KO_KOREAN_OUTPUT_REQUEST_RE.test(body) && !EN_KOREAN_OUTPUT_REQUEST_RE.test(body);
+  return !KO_KOREAN_OUTPUT_REQUEST_RE.test(unnegated) && !EN_KOREAN_OUTPUT_REQUEST_RE.test(unnegated);
 }
