@@ -839,4 +839,15 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
+
+  it("scans unclosed curly and corner quotes in linear time without quadratic CITED_CURLY_QUOTE_RE backtracking", () => {
+    const unclosedCurlyQuotes = "“".repeat(35_000);
+    const sample = `한국어 문장 설명과 “Prove It Works” 및 「Boundary Discipline」 원칙과 ${unclosedCurlyQuotes} 기호를 상세하게 확인하고 검증한다.`;
+    const startMs = performance.now();
+    const analysis = analyzeField("content", sample);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.equal(analysis.status, "korean");
+  });
 });
