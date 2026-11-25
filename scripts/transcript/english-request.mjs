@@ -41,6 +41,7 @@ const LANG_CANONICAL_MAP = new Map([
 ]);
 
 const KO_COMPLAINT_PREFIX_GUARD = "(?<!(?:왜|자꾸만?|계속(?:해서)?)(?:\\s+[가-힣]{1,8}){0,2}\\s*)";
+const KO_COMPLAINT_POSTFIX_RE = /(?:왜|자꾸만?|계속(?:해서)?)/;
 const KO_REQUEST_NOUN_ACTION = "(?:번역|영작|작성|답변|대답|답장|응답|설명|요약|정리|출력|변환|표현|교정)";
 const KO_REQUEST_NOUN_ENDING =
   "(?:해\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|주시기|주길|라|달라|보여\\s*줘|보여주세요)|해서\\s*(?:(?:보여|알려)\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|달라|라)|보여주세요|보여줘|알려주세요|알려줘)|해주세요|해줘|해라|하라|하시오|하십시오|하세요(?!\\?)|하고(?=,|\\s)|하길\\s*바라|하기\\s*바라|하기를\\s*바라|하길\\s*원해|하기\\s*원해|하기를\\s*원해|(?:[을를]\\s*|(?<=\\s))(?:원해|원해요|원합니다|바라|바래|바랍니다)|(?:[을를]\\s*)?부탁(?:해|해요|합니다|드립니다|드려요)?|해(?=$|[.!,;\\n])|해요(?=$|[.!,;\\s])|:(?=$|\\s))";
@@ -237,6 +238,10 @@ function isSourceDescription(intermediate, action) {
   return KO_SOURCE_OBJECT_RE.test(intermediate) || KO_CONSUME_ACTIONS.has(resolvedAction);
 }
 
+function hasComplaintPostfix(text, match) {
+  return KO_COMPLAINT_POSTFIX_RE.test(text.slice((match.index ?? 0) + match[0].length));
+}
+
 function collectKoreanEnglishRequestLangs(sentence) {
   const langs = new Set();
   if (KO_KOREAN_OUTPUT_REQUEST_RE.test(sentence)) {
@@ -245,6 +250,9 @@ function collectKoreanEnglishRequestLangs(sentence) {
   const masked = sentence.replace(KO_DESCRIPTIVE_OR_COMPLAINT_RE, DESCRIPTIVE_MASK);
 
   for (const match of masked.matchAll(KO_LANG_RO_REQUEST_RE)) {
+    if (hasComplaintPostfix(masked, match)) {
+      continue;
+    }
     const intermediate = (match[2] ?? "").trim();
     if (intermediate.length === 0 || (!KO_INTERMEDIATE_BLOCKLIST_RE.test(intermediate) && !isSourceDescription(intermediate, match[3] ?? ""))) {
       const code = LANG_CANONICAL_MAP.get((match[1] ?? "").toLowerCase());
@@ -255,6 +263,9 @@ function collectKoreanEnglishRequestLangs(sentence) {
   }
 
   for (const match of masked.matchAll(KO_VERBLESS_RO_REQUEST_RE)) {
+    if (hasComplaintPostfix(masked, match)) {
+      continue;
+    }
     const intermediate = (match[1] ?? "").trim();
     if (intermediate.length === 0 || (!KO_INTERMEDIATE_BLOCKLIST_RE.test(intermediate) && !KO_SOURCE_MODIFIER_RE.test(intermediate))) {
       const code = LANG_CANONICAL_MAP.get((match[2] ?? "").toLowerCase());
@@ -265,6 +276,9 @@ function collectKoreanEnglishRequestLangs(sentence) {
   }
 
   for (const match of masked.matchAll(KO_NOUN_MODIFIER_REQUEST_RE)) {
+    if (hasComplaintPostfix(masked, match)) {
+      continue;
+    }
     const token = match[1] ?? match[2] ?? match[3] ?? "";
     const code = LANG_CANONICAL_MAP.get(token.toLowerCase());
     if (code) {
