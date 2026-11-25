@@ -538,6 +538,21 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(isExplicitEnglishOutputRequest("영어로 옮긴 거 요약을 좀 해 줘"), false);
   });
 
+  it("normalizes trailing question punctuation in linear time on ?-terminated sentences with long whitespace or punctuation runs", () => {
+    for (const filler of [" ", ",", ";", "~"]) {
+      const paddedQuestion = `영어로 된${filler.repeat(60_000)}글 써줘?`;
+      const startMs = performance.now();
+      const result = isExplicitEnglishOutputRequest(paddedQuestion);
+      const elapsedMs = performance.now() - startMs;
+
+      assert.ok(
+        elapsedMs < 250,
+        `expected linear-time trailing question normalization for "${filler}" (<250ms), took ${elapsedMs.toFixed(1)}ms`,
+      );
+      assert.equal(result, false);
+    }
+  });
+
   it("handles dotted filenames and versions, CJK foreign languages, clause-scoped negation, and Korean reasoning clauses", () => {
     for (const prompt of [
       "영어로 README.md 요약해 줘",
@@ -656,6 +671,12 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "영어로 답하세요？",
       "답변은 영어로,?",
       "답변은 영어로;?",
+      "영어로 답해, ..?",
+      "영어로 답해; .?",
+      "답변은 영어로, ..?",
+      "답변은 영어로; .?",
+      "영어로 답하세요~..?",
+      "영어로 답하세요, …?",
       "영어로 답해..?",
       "영어로 답해.?",
       "영어로 답해!?",
@@ -703,6 +724,9 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "왜영어로 답해",
       "이 문장 영어로 번역해 줘. 나머지는 계속 한국어로 해",
       "영어로 답해,?",
+      "영어로 답해, ..?",
+      "답변은 영어로, ..?",
+      "영어로 답하세요~..?",
       "영어로 답해..?",
       "영어로 답해.?",
       "영어로 답해!?",
