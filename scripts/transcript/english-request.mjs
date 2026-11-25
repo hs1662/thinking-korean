@@ -6,7 +6,6 @@ const METADATA_BLOCK_RE =
   /<(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>[\s\S]*?<\/\1>/gi;
 
 const QUOTE_LINE_RE = /^[ \t]*>.*$/gm;
-// Whole-message short requests ("English, please.", "영어로요"); descriptions or negations never match.
 const SHORT_ENGLISH_REQUEST_RE = /^(?:(?:in\s+)?english,?\s+please|영어로요?)\s*[.!]*$/i;
 
 const FOREIGN_LANG_KO = "(?:영어|영문|프랑스어|독일어|스페인어|이탈리아어|포르투갈어|외국어)";
@@ -24,8 +23,6 @@ const KO_NEGATED_TRANSLATION_RE = new RegExp(
     `|${FOREIGN_LANG_KO}(?:으로|로)?\\s*(?:말고|대신|아닌|아니라)`,
 );
 
-// Descriptive or complaint phrase about text that already is in English ("영어로 작성된", "영어로 답변하는 거").
-// It is masked out of the sentence instead of rejecting the whole sentence, so a separate output request survives.
 const KO_DESCRIPTIVE_OR_COMPLAINT_RE = new RegExp(
   `${FOREIGN_LANG_KO}(?:으로|로)\\s*(?:번역|작성|답변|답|답장|응답|설명|요약|정리|출력|변환|표현|쓰|적|말|나오|생각|추론|처리|표시|생성)(?:하|해)?(?:되어|되|된|되는|됐|했|하는\\s*(?:거|것|지|데|중)|하고\\s*있|나오|았|었|잖아|는데|는지)`,
   "g",
@@ -39,7 +36,6 @@ const KO_KOREAN_OUTPUT_REQUEST_RE = new RegExp(
 const KO_INTERMEDIATE_BLOCKLIST_RE =
   /(?:되어|되는|됐|했|하는|하고|하면|말고|대신|안\s*돼|안\s*되|버그|오류|문제|이슈|현상|원인|한국어|한글|국문)/;
 
-// "영어로 된/작성된/쓰인 … X" describes the source text; X is the input, not the requested output.
 const KO_SOURCE_MODIFIER_RE = /(?:^|\s)(?:된|작성된|쓰인|쓰여진|적힌|나온|표시된|출력된|되어\s*있는)(?:\s|$)/;
 const KO_SOURCE_OBJECT_RE =
   /(?:에러|오류|로그|메시지|문서|파일|글|코드|내용|텍스트|문단|원문|자료|기사|논문|출력|결과|주석|페이지|경고|화면|설명서)/;
@@ -50,18 +46,19 @@ const KO_LANG_RO_REQUEST_RE = new RegExp(
   "g",
 );
 
-// "영어 X(을/를) 작성해 줘": intermediate words must not carry an object particle ("영어 문서를 …" is an input).
-// Bare "요약" counts only as "영어 요약(을/를) 작성/출력해 줘"; "요약본/요약문" behave like other output nouns.
 const KO_NOUN_MODIFIER_REQUEST_RE = new RegExp(
   `(?:영어|영문)\\s+(?:(?![가-힣A-Za-z0-9]*[을를]\\s)[가-힣A-Za-z0-9]+\\s+){0,2}(?:번역(?:본|문)?|초안|버전|이메일|메일|문장|답장|요약본|요약문)(?:을|를)?\\s*(?:(?:작성|번역|출력|제공|생성)${KO_REQUEST_NOUN_ENDING}|${KO_SHORT_VERB_ENDING})` +
     `|(?:영어|영문)\\s*요약(?:을|를)?\\s*(?:작성|출력)${KO_REQUEST_NOUN_ENDING}`,
 );
 
+const EN_OUTPUT_NOUNS = "(?:translation|version|draft|response|reply|summary|email|mail|message)";
+
 const EN_NEGATED_OUTPUT_RE = new RegExp(
   `\\b(?:do\\s+not|don['’]t|never|avoid|stop|quit)\\s+(?:[a-z]+\\s+){0,2}(?:translat(?:e|ing)|writ(?:e|ing)|repl(?:y|ying)|respond(?:ing)?|answer(?:ing)?|explain(?:ing)?|summariz(?:e|ing)|output(?:ting)?|rewrit(?:e|ing)|draft(?:ing)?|speak(?:ing)?|talk(?:ing)?|us(?:e|ing))\\b[^.!?\\n,;]{0,40}\\b(?:(?:in|into|to)\\s+)?${FOREIGN_LANG_EN}\\b` +
+    `|\\b(?:do\\s+not|don['’]t|never)\\s+(?:want|need)\\s+(?:(?:an?|the|some)\\s+)?(?:[a-z]+\\s+){0,2}${FOREIGN_LANG_EN}\\s+${EN_OUTPUT_NOUNS}\\b` +
     `|\\binstead\\s+of\\b[^.!?\\n,;]{0,30}\\b${FOREIGN_LANG_EN}\\b` +
     `|\\bnot\\s+(?:in|into|to)\\s+${FOREIGN_LANG_EN}\\b` +
-    `|\\bnot\\s+(?:an?\\s+)?${FOREIGN_LANG_EN}\\s+(?:translation|version|response|reply)\\b`,
+    `|\\bnot\\s+(?:an?\\s+)?(?:[a-z]+\\s+){0,2}${FOREIGN_LANG_EN}\\s+${EN_OUTPUT_NOUNS}\\b`,
   "i",
 );
 
@@ -71,7 +68,7 @@ const EN_NARRATIVE_COMPLAINT_RE =
 const EN_ACTION_BODY =
   `(?:translate\\b[^.!?\\n]{0,60}\\b(?:into|to)\\s+${FOREIGN_LANG_EN}\\b` +
   `|(?:write|reply|respond|answer|explain|summarize|output|rewrite|draft|compose|phrase|express|say|give|provide|return|produce)\\b[^.!?\\n]{0,50}\\bin\\s+${FOREIGN_LANG_EN}\\b` +
-  `|(?:give|provide|write|draft|output|return|produce|show|make)\\b[^.!?\\n]{0,40}\\b(?:an?\\s+)?${FOREIGN_LANG_EN}\\s+(?:translation|version|draft|response|reply|summary)\\b)`;
+  `|(?:give|provide|write|draft|compose|output|return|produce|show|make)\\b[^.!?\\n]{0,40}\\b(?:an?\\s+)?(?:[a-z]+\\s+){0,2}${FOREIGN_LANG_EN}\\s+${EN_OUTPUT_NOUNS}\\b)`;
 
 const EN_IMPERATIVE_REQUEST_RE = new RegExp(
   `(?:^|(?:[,;]\\s*|\\b(?:and|then|so)\\s+))(?:(?:please|kindly|just|now|only|always)\\s+)*${EN_ACTION_BODY}`,
@@ -79,7 +76,8 @@ const EN_IMPERATIVE_REQUEST_RE = new RegExp(
 );
 
 const EN_POLITE_REQUEST_RE = new RegExp(
-  `\\b(?:can\\s+you|could\\s+you|would\\s+you|will\\s+you|please|i\\s+(?:want|need|would\\s+like)(?:\\s+you)?\\s+to|i['’]d\\s+like(?:\\s+you)?\\s+to)\\s+(?:(?:please|kindly|just)\\s+)*${EN_ACTION_BODY}`,
+  `\\b(?:can\\s+you|could\\s+you|would\\s+you|will\\s+you|please|i\\s+(?:want|need|would\\s+like)(?:\\s+you)?\\s+to|i['’]d\\s+like(?:\\s+you)?\\s+to)\\s+(?:(?:please|kindly|just)\\s+)*${EN_ACTION_BODY}` +
+    `|\\b(?:i\\s+(?:want|need|would\\s+like)|i['’]d\\s+like)\\s+(?:(?:an?|the|some)\\s+)?(?:[a-z]+\\s+){0,2}${FOREIGN_LANG_EN}\\s+${EN_OUTPUT_NOUNS}\\b`,
   "i",
 );
 
@@ -93,8 +91,6 @@ const EN_KOREAN_OUTPUT_REQUEST_RE =
 
 function unwrapUserRequest(stripped) {
   const lower = stripped.toLowerCase();
-  // Only a request that is entirely wrapped in <USER_REQUEST> is unwrapped; inline tags quoted inside
-  // free text (for example an HTML sample) stay part of the text.
   if (
     lower.startsWith(USER_REQUEST_OPEN) &&
     lower.endsWith(USER_REQUEST_CLOSE) &&
@@ -105,7 +101,6 @@ function unwrapUserRequest(stripped) {
   return stripped;
 }
 
-// Fenced code blocks and markdown quote lines are pasted material, not the user's own request.
 function extractUserRequestBody(rawText) {
   if (typeof rawText !== "string") {
     return "";

@@ -6,8 +6,8 @@ import {
   PRE_TOOL_DENIAL_NEEDLE,
   isPreToolDenialStep,
   parseTranscriptJsonlWithStats,
-  parseTranscriptLine,
 } from "./transcript.mjs";
+import { parseRawRecord, recordToStep } from "./transcript/steps.mjs";
 
 const CHUNK_SIZE = 256 * 1024;
 const PREFIX_SCAN_BYTES = 256;
@@ -24,6 +24,50 @@ function skipWhitespace(buf, start) {
     i += 1;
   }
   return i;
+}
+
+function createJsonBalance() {
+  return { depth: 0, inString: false, escaped: false, closed: false, valid: true };
+}
+
+function advanceJsonBalance(state, buf, start, end) {
+  if (!state.valid) {
+    return;
+  }
+  for (let i = start; i < end; i += 1) {
+    const b = buf[i];
+    if (state.inString) {
+      if (state.escaped) {
+        state.escaped = false;
+      } else if (b === 0x5c) {
+        state.escaped = true;
+      } else if (b === 0x22) {
+        state.inString = false;
+      }
+      continue;
+    }
+    if (state.closed) {
+      if (!isAsciiWhitespace(b)) {
+        state.valid = false;
+        return;
+      }
+      continue;
+    }
+    if (b === 0x22) {
+      state.inString = true;
+    } else if (b === 0x7b || b === 0x5b) {
+      state.depth += 1;
+    } else if (b === 0x7d || b === 0x5d) {
+      state.depth -= 1;
+      if (state.depth < 0) {
+        state.valid = false;
+        return;
+      }
+      if (state.depth === 0) {
+        state.closed = true;
+      }
+    }
+  }
 }
 
 function scanJsonStringEnd(buf, openQuoteIdx) {
@@ -132,23 +176,42 @@ function readTranscriptStepsFast(filePath) {
   let prefixLen = 0;
   let lineChunks = [];
   let lineBytes = 0;
+  let skipBalance = null;
   let isFirstLine = true;
 
   const pushParsed = (rawLine) => {
-    const step = parseTranscriptLine(rawLine, validRecordCount);
+    const parsed = parseRawRecord(rawLine);
+    if (!parsed) {
+      return;
+    }
+    const step = recordToStep(parsed, validRecordCount);
+    validRecordCount += 1;
     if (step) {
       steps.push(step);
-      validRecordCount += 1;
     }
   };
 
   const probeLine = (buf) => {
     const text = buf.toString("utf8");
-    const step = text.toLowerCase().includes(PRE_TOOL_DENIAL_NEEDLE) ? parseTranscriptLine(text, validRecordCount) : null;
-    if (step && isPreToolDenialStep(step)) {
-      steps.push(step);
+    const parsed = parseRawRecord(text);
+    if (!parsed) {
+      return;
+    }
+    if (text.toLowerCase().includes(PRE_TOOL_DENIAL_NEEDLE) && isPreToolDenialStep(parsed)) {
+      const step = recordToStep(parsed, validRecordCount);
+      if (step) {
+        steps.push(step);
+      }
     }
     validRecordCount += 1;
+  };
+
+  const startSkipBalance = (buffers) => {
+    skipBalance = createJsonBalance();
+    for (let i = 0; i < buffers.length; i += 1) {
+      const segment = i === 0 ? stripBomBytes(buffers[i], isFirstLine) : buffers[i];
+      advanceJsonBalance(skipBalance, segment, 0, segment.length);
+    }
   };
 
   const appendSegment = (view, start, end) => {
@@ -156,6 +219,8 @@ function readTranscriptStepsFast(filePath) {
       lineBytes += end - start;
       if (lineBytes > PROBE_MAX_BYTES) {
         lineState = "skip";
+        startSkipBalance(lineChunks);
+        advanceJsonBalance(skipBalance, view, start, end);
         lineChunks = [];
         return;
       }
@@ -166,7 +231,9 @@ function readTranscriptStepsFast(filePath) {
   const finalizeLine = () => {
     if (lineState === "skip") {
       hasContentBytes = true;
-      validRecordCount += 1;
+      if (skipBalance && skipBalance.valid && skipBalance.closed && skipBalance.depth === 0 && !skipBalance.inString) {
+        validRecordCount += 1;
+      }
     } else if (lineState === "undecided") {
       const prefixSlice = stripBomBytes(prefixBuf.subarray(0, prefixLen), isFirstLine);
       const rawLine = prefixSlice.toString("utf8");
@@ -174,7 +241,9 @@ function readTranscriptStepsFast(filePath) {
         hasContentBytes = true;
         const classification = classifyLinePrefix(prefixSlice);
         if (classification === "skip") {
-          validRecordCount += 1;
+          if (parseRawRecord(rawLine)) {
+            validRecordCount += 1;
+          }
         } else if (classification === "probe") {
           probeLine(prefixSlice);
         } else {
@@ -196,6 +265,7 @@ function readTranscriptStepsFast(filePath) {
     prefixLen = 0;
     lineChunks = [];
     lineBytes = 0;
+    skipBalance = null;
   };
 
   try {
@@ -204,7 +274,6 @@ function readTranscriptStepsFast(filePath) {
       if (bytesRead <= 0) {
         break;
       }
-
       const view = chunk.subarray(0, bytesRead);
       let pos = 0;
       while (pos < bytesRead) {
@@ -219,25 +288,27 @@ function readTranscriptStepsFast(filePath) {
           if (prefixLen === PREFIX_SCAN_BYTES && (pos < segEnd || nlIdx === -1)) {
             const classification = classifyLinePrefix(stripBomBytes(prefixBuf, isFirstLine));
             lineState = classification === "skip" || classification === "probe" ? classification : "keep";
-            if (lineState !== "skip") {
+            if (lineState === "skip") {
+              startSkipBalance([prefixBuf]);
+            } else {
               lineChunks = [Buffer.from(prefixBuf)];
               lineBytes = PREFIX_SCAN_BYTES;
             }
           }
         }
-        if (lineState === "keep" || lineState === "probe") {
+        if (lineState === "skip") {
+          advanceJsonBalance(skipBalance, view, pos, segEnd);
+        } else if (lineState === "keep" || lineState === "probe") {
           appendSegment(view, pos, segEnd);
         }
         pos = segEnd;
-
         if (nlIdx !== -1) {
           finalizeLine();
           pos = nlIdx + 1;
         }
       }
     }
-
-    if (prefixLen > 0 || lineChunks.length > 0) {
+    if (prefixLen > 0 || lineChunks.length > 0 || skipBalance !== null) {
       finalizeLine();
     }
   } finally {
@@ -254,7 +325,6 @@ export function resolveTranscriptCandidates(transcriptPath) {
   return [transcriptPath];
 }
 
-// A candidate is accepted only when it yields at least one step; otherwise the next candidate is tried.
 function readTranscript(transcriptPath, readTextFile) {
   let available = false;
   for (const candidatePath of resolveTranscriptCandidates(transcriptPath)) {
@@ -298,18 +368,15 @@ export function parseHookPayload(stdinText, expectedEventName) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return null;
   }
-  const name = payload.hookEventName;
+  const name = payload.hookEventName ?? payload.hook_event_name;
   if (expectedEventName && name !== undefined && name !== null && name !== "" && name !== expectedEventName) {
     return null;
   }
-
   return payload;
 }
 
 export function isDirectExecution(moduleUrl) {
-  if (!process.argv[1]) {
-    return false;
-  }
+  if (!process.argv[1]) return false;
   try {
     return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(resolve(process.argv[1]));
   } catch {
@@ -319,9 +386,7 @@ export function isDirectExecution(moduleUrl) {
 
 export function loadHookContext(stdinText, eventName, readTextFile) {
   const payload = parseHookPayload(stdinText, eventName);
-  if (!payload) {
-    return null;
-  }
+  if (!payload) return null;
   const rawPath = payload.transcriptPath ?? payload.transcript_path;
   const transcriptPath = typeof rawPath === "string" ? rawPath.trim() : "";
   const { steps, available } =
@@ -338,9 +403,7 @@ export async function runHookCli(handler, fallbackOutput = {}) {
   try {
     process.stdin.setEncoding("utf8");
     let stdinText = "";
-    for await (const chunk of process.stdin) {
-      stdinText += chunk;
-    }
+    for await (const chunk of process.stdin) stdinText += chunk;
     output = handler(stdinText);
   } catch {
     output = fallbackOutput;

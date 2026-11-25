@@ -12,8 +12,8 @@ export function handlePostInvocation(stdinText, readTextFile) {
   }
   const { payload, steps } = context;
 
-  const options =
-    typeof payload.lastUserInput === "string" ? { lastUserInput: payload.lastUserInput } : {};
+  const rawLastUserInput = payload.lastUserInput ?? payload.last_user_input;
+  const options = typeof rawLastUserInput === "string" ? { lastUserInput: rawLastUserInput } : {};
   const decision = decideHookAction(steps, options);
   if (decision.action !== "inject") {
     return {};

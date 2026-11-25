@@ -33,8 +33,6 @@ export function getToolCalls(step) {
 const DENIAL_ERROR_RE = /^(?:Encountered error in (?:step|tool) execution:\s*)?tool call denied by pre-tool hook\b/i;
 const DENIAL_CONTENT_LINE_RE = /^(?:Encountered error in (?:step|tool) execution:\s*)?tool call denied by pre-tool hook(?::|\b)/i;
 
-// Only a record whose error, or an own content line, starts with the denial sentence counts; a tool output
-// that merely quotes the needle (for example a file read of this module) must not.
 export function isPreToolDenialStep(step) {
   if (!step || typeof step !== "object" || step.type !== "GENERIC") {
     return false;
@@ -79,7 +77,7 @@ export function deniedToolCallIndexes(steps, plannerPos) {
   return denied;
 }
 
-function parseRawRecord(line) {
+export function parseRawRecord(line) {
   if (typeof line !== "string") {
     return null;
   }
@@ -105,7 +103,7 @@ function isTrackedTranscriptRecord(parsed) {
   return KEPT_STEP_TYPES.has(parsed.type) || isPreToolDenialStep(parsed);
 }
 
-function recordToStep(parsed, fallbackStepIndex) {
+export function recordToStep(parsed, fallbackStepIndex) {
   if (!isTrackedTranscriptRecord(parsed)) {
     return null;
   }

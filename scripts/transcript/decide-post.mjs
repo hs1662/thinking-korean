@@ -26,7 +26,6 @@ function evaluateStep(step, analyzerOptions) {
   );
 }
 
-// Reverse scan: latest PLANNER_RESPONSE of the current turn, its USER_INPUT, and the markers that follow it.
 function scanLatestTurn(steps) {
   let plannerIdx = -1;
   let userIdx = -1;
@@ -70,9 +69,9 @@ function markerTargets(parsedMarker, lastActionable, lastEffective) {
 }
 
 function replayTrackers(steps, ctx) {
-  const { caps, cooldownInvocations, analyzerOptions, cachedIdx, cachedEval } = ctx;
+  const { caps, cooldownInvocations, analyzerOptions, cachedIdx, cachedEval, latestUserIdx, currentTurnContentExempt } = ctx;
   const trackers = { thinking: createFieldTracker(), content: createFieldTracker(), ui: createFieldTracker() };
-  let currentContentExempt = false;
+  let currentContentExempt = latestUserIdx === -1 && currentTurnContentExempt !== undefined ? currentTurnContentExempt : false;
   let lastActionable = [];
   let lastEffective = [];
 
@@ -82,7 +81,10 @@ function replayTrackers(steps, ctx) {
       continue;
     }
     if (step.type === "USER_INPUT") {
-      currentContentExempt = isExplicitEnglishOutputRequest(step.content);
+      currentContentExempt =
+        i === latestUserIdx && currentTurnContentExempt !== undefined
+          ? currentTurnContentExempt
+          : isExplicitEnglishOutputRequest(step.content);
       continue;
     }
 
@@ -133,6 +135,10 @@ function replayTrackers(steps, ctx) {
   return trackers;
 }
 
+function coversAllFields(marker) {
+  return marker.fields.length === 0;
+}
+
 export function decideHookAction(steps, options = {}) {
   const {
     cooldownInvocations = DEFAULT_COOLDOWN_INVOCATIONS,
@@ -146,29 +152,26 @@ export function decideHookAction(steps, options = {}) {
     return { action: "noop", reason: "no_planner_response" };
   }
 
-  // Fast path: inspect only the latest PLANNER_RESPONSE so long clean sessions avoid O(N) re-evaluation.
   const { plannerIdx, userIdx, trailingMarkers } = scanLatestTurn(steps);
   if (plannerIdx === -1) {
     return { action: "noop", reason: "no_planner_response" };
   }
-  // A trailing marker without field information (legacy) covers everything.
-  if (trailingMarkers.some((marker) => marker.fields.length === 0)) {
+  if (trailingMarkers.some(coversAllFields)) {
     return { action: "noop", reason: "already_covered" };
   }
 
   const latestStep = steps[plannerIdx];
-  const contentExempt =
-    typeof lastUserInput === "string" && lastUserInput.trim().length > 0
-      ? isExplicitEnglishOutputRequest(lastUserInput)
-      : userIdx !== -1
-        ? isExplicitEnglishOutputRequest(steps[userIdx].content)
-        : false;
+  const hasLastUserInput = typeof lastUserInput === "string" && lastUserInput.trim().length > 0;
+  const contentExempt = hasLastUserInput
+    ? isExplicitEnglishOutputRequest(lastUserInput)
+    : userIdx !== -1
+      ? isExplicitEnglishOutputRequest(steps[userIdx].content)
+      : false;
   const latestEval = evaluateStep(latestStep, analyzerOptions);
   const drifted = (latestEval.kind === "drifted" ? latestEval.driftedFields : []).filter(
     (field) => !(field === "content" && contentExempt),
   );
 
-  // Fields already corrected by markers after the latest planner (PreToolUse denials, earlier injections).
   const coveredFields = new Set(trailingMarkers.flatMap((marker) => marker.fields));
   const uncovered = drifted.filter((field) => !coveredFields.has(field));
   if (uncovered.length === 0) {
@@ -182,15 +185,20 @@ export function decideHookAction(steps, options = {}) {
     analyzerOptions,
     cachedIdx: plannerIdx,
     cachedEval: latestEval,
+    latestUserIdx: userIdx,
+    currentTurnContentExempt: hasLastUserInput ? contentExempt : undefined,
   });
 
   const actionableFields = getActionableFields(uncovered, trackers, cooldownInvocations, caps);
   if (actionableFields.length === 0) {
-    if (uncovered.length === 1 && uncovered[0] === "thinking" && isFieldCapped("thinking", trackers.thinking, caps)) {
-      return { action: "noop", reason: "thinking_cap_reached" };
-    }
-    if (uncovered.length === 1 && uncovered[0] === "ui" && isFieldCapped("ui", trackers.ui, caps)) {
-      return { action: "noop", reason: "ui_cap_reached" };
+    if (uncovered.every((field) => isFieldCapped(field, trackers[field], caps))) {
+      if (uncovered.length === 1 && uncovered[0] === "thinking") {
+        return { action: "noop", reason: "thinking_cap_reached" };
+      }
+      if (uncovered.length === 1 && uncovered[0] === "ui") {
+        return { action: "noop", reason: "ui_cap_reached" };
+      }
+      return { action: "noop", reason: "cap_reached" };
     }
     return { action: "noop", reason: "cooldown_active" };
   }

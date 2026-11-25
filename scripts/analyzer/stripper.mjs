@@ -1,4 +1,3 @@
-// extractNaturalText and the strip* passes that remove code, quotes, paths and identifiers.
 import { MAX_ERROR_QUOTE_CHARS, MAX_SHORT_TOKEN_QUOTE_CHARS, MAX_SHORT_TOKEN_QUOTE_WORDS } from "./constants.mjs";
 import { HAS_HANGUL_RE, PROSE_OPENER_RE, englishWords, hasEnglishProseFunctionWord, isUpperStopword } from "./lexicon.mjs";
 
@@ -89,23 +88,23 @@ function isEscapedBacktick(line, index) {
   return backslashes % 2 === 1;
 }
 
-function stripInlineCodeLine(line) {
-  if (!line.includes("`")) {
-    return line;
+function stripInlineCodeBlock(block) {
+  if (!block.includes("`")) {
+    return block;
   }
 
   const runs = [];
-  for (let i = 0; i < line.length; ) {
-    if (line[i] !== "`") {
+  for (let i = 0; i < block.length; ) {
+    if (block[i] !== "`") {
       i += 1;
       continue;
     }
-    if (isEscapedBacktick(line, i)) {
+    if (isEscapedBacktick(block, i)) {
       i += 1;
       continue;
     }
     let j = i + 1;
-    while (j < line.length && line[j] === "`") {
+    while (j < block.length && block[j] === "`") {
       j += 1;
     }
     runs.push({ start: i, end: j, len: j - i });
@@ -139,22 +138,49 @@ function stripInlineCodeLine(line) {
 
     if (cursor < list.length) {
       const closeRun = runs[list[cursor]];
-      result += line.slice(pos, run.start);
+      result += block.slice(pos, run.start);
       result += " ";
       pos = closeRun.end;
       cursorByLen.set(run.len, cursor + 1);
     }
   }
 
-  result += line.slice(pos);
+  result += block.slice(pos);
   return result;
+}
+
+const INLINE_BLOCK_SINGLE_LINE_RE = /^[ \t]*(?:#{1,6}(?:[ \t]|$)|\|.*\|[ \t]*$)/;
+const INLINE_BLOCK_START_RE = /^[ \t]*(?:[-*+][ \t]+|\d+\.[ \t]+|>)/;
+
+function splitInlineCodeBlocks(text) {
+  const blocks = [];
+  let current = [];
+  const flush = () => {
+    if (current.length > 0) {
+      blocks.push(current.join("\n"));
+      current = [];
+    }
+  };
+  for (const line of text.split("\n")) {
+    if (line.trim().length === 0 || INLINE_BLOCK_SINGLE_LINE_RE.test(line)) {
+      flush();
+      blocks.push(line);
+      continue;
+    }
+    if (INLINE_BLOCK_START_RE.test(line)) {
+      flush();
+    }
+    current.push(line);
+  }
+  flush();
+  return blocks;
 }
 
 export function stripInlineCode(text) {
   if (!text.includes("`")) {
     return text;
   }
-  return text.split("\n").map(stripInlineCodeLine).join("\n");
+  return splitInlineCodeBlocks(text).map(stripInlineCodeBlock).join("\n");
 }
 
 export function stripBlockquotes(text) {

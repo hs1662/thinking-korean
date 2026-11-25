@@ -10,11 +10,11 @@ export function handleStop(stdinText, readTextFile) {
   }
   const { payload, steps } = context;
 
+  const rawTerminationReason = payload.terminationReason ?? payload.termination_reason;
   const decision = decideStopAction(steps, {
-    lastUserInput: payload.lastUserInput,
-    continuationActive: payload.continuationActive === true,
-    terminationReason:
-      typeof payload.terminationReason === "string" ? payload.terminationReason.trim() : "",
+    lastUserInput: payload.lastUserInput ?? payload.last_user_input,
+    continuationActive: (payload.continuationActive ?? payload.continuation_active) === true,
+    terminationReason: typeof rawTerminationReason === "string" ? rawTerminationReason.trim() : "",
   });
 
   if (decision.action !== "continue") {
