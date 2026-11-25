@@ -276,6 +276,28 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "영어로 출력된것들을 정리해 줘",
       "영어로 되어 있는거를 설명해 줘",
       "영어로 되어있는것들을 요약해 줘",
+      "영어로 작성한 문서를 요약해 줘",
+      "영어로 작성한거를 요약해 줘",
+      "영어로 번역한 글을 설명해 줘",
+      "영어로 번역한것들을 정리해 줘",
+      "영어로 쓴 에러 메시지를 정리해 줘",
+      "영어로 쓴거를 설명해 줘",
+      "영어로 적은 내용을 요약해 줘",
+      "영어로 적은것들도 정리해 줘",
+      "영어로 말한 내용을 정리해 줘",
+      "영어로 말한거를 요약해 줘",
+      "영어로 답한 메시지를 설명해 줘",
+      "영어로 답한거도 정리해 줘",
+      "영어로 출력한 로그를 설명해 줘",
+      "영어로 출력한것들을 요약해 줘",
+      "영어로 옮겨 놓았던 문서를 요약해 줘",
+      "영어로 옮겨놓았던거를 요약해 줘",
+      "영어로 옮겨 두었던 텍스트를 설명해 줘",
+      "영어로 옮겨두었던것들을 정리해 줘",
+      "영어로 옮겨 주었던 글을 정리해 줘",
+      "영어로 옮겨주었던거도 설명해 줘",
+      "영어로 옮겨 줬던 내용을 설명해 줘",
+      "영어로 옮겨줬던거를 요약해 줘",
     ]) {
       assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
     }
@@ -338,5 +360,16 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(decideHookAction(boundNounParticleSteps).action, "inject");
     assert.deepEqual(decideHookAction(boundNounParticleSteps).driftedFields, ["content"]);
     assert.equal(decideStopAction(boundNounParticleSteps, { terminationReason: "NO_TOOL_CALL" }).action, "continue");
+
+    const activeSourceModifierSteps = [
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n영어로 작성한 문서를 요약해 줘\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 문서의 핵심 내용을 한국어로 요약하자.",
+        content: "Here is a summary of the English document.",
+      }),
+    ];
+    assert.equal(decideHookAction(activeSourceModifierSteps).action, "inject");
+    assert.deepEqual(decideHookAction(activeSourceModifierSteps).driftedFields, ["content"]);
+    assert.equal(decideStopAction(activeSourceModifierSteps, { terminationReason: "NO_TOOL_CALL" }).action, "continue");
   });
 });
