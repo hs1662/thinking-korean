@@ -2,8 +2,10 @@ import { stripFencedCodeBlocks } from "../analyzer/stripper.mjs";
 
 const USER_REQUEST_OPEN = "<user_request>";
 const USER_REQUEST_CLOSE = "</user_request>";
-const METADATA_BLOCK_RE =
-  /<(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>[\s\S]*?<\/\1>/gi;
+const METADATA_TAGS = [
+  { open: "<additional_metadata>", close: "</additional_metadata>" },
+  { open: "<user_settings_change>", close: "</user_settings_change>" },
+];
 
 const QUOTE_LINE_RE = /^[ \t]*>.*$/gm;
 const SHORT_ENGLISH_REQUEST_RE = /^(?:(?:in\s+)?english,?\s+please|in\s+english|영어로요?)\s*[.!]*$/i;
@@ -104,11 +106,60 @@ function unwrapUserRequest(stripped) {
   return stripped;
 }
 
+function stripMetadataBlocks(text) {
+  const lower = text.toLowerCase();
+  const activeTags = METADATA_TAGS.filter(
+    (tag) => lower.includes(tag.open) && lower.includes(tag.close),
+  );
+  if (activeTags.length === 0) {
+    return text;
+  }
+
+  const exhausted = new Set();
+  let cursor = 0;
+  let result = "";
+
+  while (cursor < text.length) {
+    let bestTag = null;
+    let bestOpenIdx = -1;
+
+    for (const tag of activeTags) {
+      if (exhausted.has(tag)) {
+        continue;
+      }
+      const openIdx = lower.indexOf(tag.open, cursor);
+      if (openIdx === -1) {
+        exhausted.add(tag);
+        continue;
+      }
+      if (bestOpenIdx === -1 || openIdx < bestOpenIdx) {
+        bestOpenIdx = openIdx;
+        bestTag = tag;
+      }
+    }
+
+    if (bestTag === null) {
+      break;
+    }
+
+    const closeIdx = lower.indexOf(bestTag.close, bestOpenIdx + bestTag.open.length);
+    if (closeIdx === -1) {
+      exhausted.add(bestTag);
+      continue;
+    }
+
+    result += text.slice(cursor, bestOpenIdx);
+    cursor = closeIdx + bestTag.close.length;
+  }
+
+  return cursor === 0 ? text : result + text.slice(cursor);
+}
+
 function extractUserRequestBody(rawText) {
   if (typeof rawText !== "string") {
     return "";
   }
-  const stripped = rawText.replace(/\r\n?/g, "\n").replace(METADATA_BLOCK_RE, "").trim();
+  const stripped = stripMetadataBlocks(rawText.replace(/\r\n?/g, "\n")).trim();
   return stripFencedCodeBlocks(unwrapUserRequest(stripped)).replace(QUOTE_LINE_RE, "").trim();
 }
 
