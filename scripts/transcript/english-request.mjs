@@ -108,48 +108,51 @@ function unwrapUserRequest(stripped) {
 
 function stripMetadataBlocks(text) {
   const lower = text.toLowerCase();
-  const activeTags = METADATA_TAGS.filter(
-    (tag) => lower.includes(tag.open) && lower.includes(tag.close),
-  );
+  const activeTags = [];
+  for (const tag of METADATA_TAGS) {
+    const openIdx = lower.indexOf(tag.open);
+    if (openIdx !== -1 && lower.indexOf(tag.close, openIdx + tag.open.length) !== -1) {
+      activeTags.push({ tag, openIdx });
+    }
+  }
   if (activeTags.length === 0) {
     return text;
   }
 
-  const exhausted = new Set();
   let cursor = 0;
   let result = "";
 
   while (cursor < text.length) {
-    let bestTag = null;
-    let bestOpenIdx = -1;
+    let bestEntry = null;
 
-    for (const tag of activeTags) {
-      if (exhausted.has(tag)) {
+    for (const entry of activeTags) {
+      if (entry.openIdx === -1) {
         continue;
       }
-      const openIdx = lower.indexOf(tag.open, cursor);
-      if (openIdx === -1) {
-        exhausted.add(tag);
-        continue;
+      if (entry.openIdx < cursor) {
+        entry.openIdx = lower.indexOf(entry.tag.open, cursor);
+        if (entry.openIdx === -1) {
+          continue;
+        }
       }
-      if (bestOpenIdx === -1 || openIdx < bestOpenIdx) {
-        bestOpenIdx = openIdx;
-        bestTag = tag;
+      if (bestEntry === null || entry.openIdx < bestEntry.openIdx) {
+        bestEntry = entry;
       }
     }
 
-    if (bestTag === null) {
+    if (bestEntry === null) {
       break;
     }
 
-    const closeIdx = lower.indexOf(bestTag.close, bestOpenIdx + bestTag.open.length);
+    const { tag, openIdx } = bestEntry;
+    const closeIdx = lower.indexOf(tag.close, openIdx + tag.open.length);
     if (closeIdx === -1) {
-      exhausted.add(bestTag);
+      bestEntry.openIdx = -1;
       continue;
     }
 
-    result += text.slice(cursor, bestOpenIdx);
-    cursor = closeIdx + bestTag.close.length;
+    result += text.slice(cursor, openIdx);
+    cursor = closeIdx + tag.close.length;
   }
 
   return cursor === 0 ? text : result + text.slice(cursor);
