@@ -7,7 +7,6 @@ const CLI_UI_HINT_LINE_RE =
 const SUMMARIZER_BOILERPLATE_LINE_RE = /^[ \t]*I['’]m thinking through how to approach this\.[ \t]*$/gm;
 const ERROR_QUOTE_RE =
   /^(?:[A-Z][A-Za-z0-9_]*Error:|Error:|Exception:|Traceback\b|FAIL(?:ED)?\b|FATAL\b|WARN(?:ING)?\b|ERR!|ENOENT\b|EACCES\b|EPERM\b|ECONNREFUSED\b|ETIMEDOUT\b|EISDIR\b|ENOTDIR\b|SyntaxError\b|TypeError\b|ReferenceError\b|RangeError\b|AssertionError\b|Unexpected\s+(?:end|token|identifier|EOF|character)|Cannot\s+(?:read|find|resolve|open|access)\b|(?:Failed\s+to|Could\s+not|Unable\s+to)\s+(?:open|read|write|load|parse|resolve|find|locate|connect|fetch|download|upload|compile|build|start|spawn|exec(?:ute)?|run|bind|listen|create|delete|remove|rename|stat|access|import|require|install|authenticate|verify|validate|initialize|allocate|lock|unlock|mount|unlink|mkdir|chmod|chown|decode|encode|serialize|deserialize|send|receive|request|sync|checkout|push|pull|clone|merge)\b|Permission\s+denied\b|No\s+such\s+file\b|at\s+\S+\s*\([^)\n]+\))/;
-const DOUBLE_QUOTED_RE = /"((?:\\.|[^"\\\n])*)"/g;
 const URL_RE = /\b(?:https?|ftp|file):\/\/[^\s<>)"'`\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+/gi;
 const XML_TAG_RE =
   /(?<![A-Za-z0-9_])<\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s+[A-Za-z_:][A-Za-z0-9:._-]*\s*=\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s"'=<>`]+))*\s*\/?>/g;
@@ -211,29 +210,66 @@ export function stripBlockquotes(text) {
   return out.join("\n");
 }
 
+function replaceDoubleQuotedSpan(rawInner) {
+  const inner = rawInner.trim();
+  if (inner.length === 0) {
+    return " ";
+  }
+  if (HAS_HANGUL_RE.test(inner)) {
+    return ` ${inner} `;
+  }
+  if (isErrorQuote(inner)) {
+    return " ";
+  }
+  const words = englishWords(inner);
+  if (
+    inner.length <= MAX_SHORT_TOKEN_QUOTE_CHARS &&
+    words.length <= MAX_SHORT_TOKEN_QUOTE_WORDS &&
+    !PROSE_OPENER_RE.test(inner) &&
+    !hasEnglishProseFunctionWord(words)
+  ) {
+    return " ";
+  }
+  return ` "${inner}" `;
+}
+
 export function stripDoubleQuotes(text) {
-  return text.replace(DOUBLE_QUOTED_RE, (_full, rawInner) => {
-    const inner = rawInner.trim();
-    if (inner.length === 0) {
-      return " ";
+  if (!text.includes('"')) {
+    return text;
+  }
+
+  let out = "";
+  let copyStart = 0;
+  let quoteStart = -1;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "\\") {
+      if (i + 1 < text.length && text[i + 1] !== "\n") {
+        i += 1;
+      }
+      continue;
     }
-    if (HAS_HANGUL_RE.test(inner)) {
-      return ` ${inner} `;
+    if (ch === "\n") {
+      quoteStart = -1;
+      continue;
     }
-    if (isErrorQuote(inner)) {
-      return " ";
+    if (ch === '"') {
+      if (quoteStart === -1) {
+        quoteStart = i;
+      } else {
+        out += text.slice(copyStart, quoteStart);
+        out += replaceDoubleQuotedSpan(text.slice(quoteStart + 1, i));
+        copyStart = i + 1;
+        quoteStart = -1;
+      }
     }
-    const words = englishWords(inner);
-    if (
-      inner.length <= MAX_SHORT_TOKEN_QUOTE_CHARS &&
-      words.length <= MAX_SHORT_TOKEN_QUOTE_WORDS &&
-      !PROSE_OPENER_RE.test(inner) &&
-      !hasEnglishProseFunctionWord(words)
-    ) {
-      return " ";
-    }
-    return ` "${inner}" `;
-  });
+  }
+
+  if (copyStart === 0) {
+    return text;
+  }
+  return out + text.slice(copyStart);
 }
 
 export function stripTechnicalAcronyms(text) {
