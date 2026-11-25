@@ -95,9 +95,9 @@ const KO_VERBLESS_RO_REQUEST_RE = new RegExp(
 );
 
 const KO_NOUN_MODIFIER_REQUEST_RE = new RegExp(
-  `(${FOREIGN_LANG_KO})\\s+(?:(?![가-힣A-Za-z0-9·/_-]{0,32}[을를]\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:번역(?:본|문)?|초안|버전|이메일|메일|문장|답장|요약본|요약문)(?:(?:을|를|만|도|은|는)?\\s*(?:(?:작성|번역|출력|제공|생성)\\s*${KO_REQUEST_NOUN_ENDING}|${KO_SHORT_VERB_ENDING})|\\s*:(?=$|\\s))` +
+  `${KO_COMPLAINT_PREFIX_GUARD}(?:(${FOREIGN_LANG_KO})\\s+(?:(?<=\\s)(?!왜\\s*|자꾸만?\\s*|계속(?:해서)?\\s*)(?![가-힣A-Za-z0-9·/_-]{0,32}[을를]\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:번역(?:본|문)?|초안|버전|이메일|메일|문장|답장|요약본|요약문)(?:(?:을|를|만|도|은|는)?\\s*(?:(?:작성|번역|출력|제공|생성)\\s*${KO_REQUEST_NOUN_ENDING}|${KO_SHORT_VERB_ENDING})|\\s*:(?=$|\\s))` +
     `|(${FOREIGN_LANG_KO})\\s*요약(?:(?:을|를|만|도|은|는)?\\s*(?:작성|출력)\\s*${KO_REQUEST_NOUN_ENDING}|\\s*:(?=$|\\s))` +
-    `|(영작)(?:\\s*[을를만도은는])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}`,
+    `|(영작)(?:\\s*[을를만도은는])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING})`,
   "g",
 );
 
@@ -244,7 +244,7 @@ function hasComplaintPostfix(text, match, nextSentence = "") {
   if (KO_COMPLAINT_POSTFIX_RE.test(remainder)) {
     return true;
   }
-  return /^요?[\s,;~]*$/.test(remainder) && KO_STANDALONE_COMPLAINT_POSTFIX_RE.test(nextSentence);
+  return /^요?[\s,;~]*\??$/.test(remainder) && KO_STANDALONE_COMPLAINT_POSTFIX_RE.test(nextSentence);
 }
 
 function collectKoreanEnglishRequestLangs(sentence, nextSentence = "") {
