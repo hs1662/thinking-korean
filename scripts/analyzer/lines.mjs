@@ -16,6 +16,7 @@ import {
   HANGUL_RE,
   HANGUL_TOKEN_RE,
   HAS_HANGUL_RE,
+  IMPERATIVE,
   PROSE_OPENER_RE,
   SENTENCE_BOUNDARY_RE,
   countEnglishWords,
@@ -40,6 +41,10 @@ function countEnglishFunctionWords(words) {
   return words.filter((word) => ENGLISH_CONTRACTION_RE.test(word) || hasWordFlag(word.toLowerCase(), FUNCTION)).length;
 }
 
+const CITED_PROSE_SUBJECT_RE = /^(?:it|this|that|these|those|there)$/i;
+const CITED_IMPERATIVE_DETERMINER_RE = /^(?:the|a|an|this|that|these|those|it|them|my|our|your|all|every)$/;
+const CITED_TITLE_PREP_RE = /^(?:in|on|at|to|of|for|from|with|by|as|or|and|vs|without|under|over|into|about|between|through|after|before|via)$/;
+
 function isShortCitedTitle(rawInner) {
   const inner = rawInner.trim();
   if (inner.length === 0 || inner.length > MAX_CITED_TITLE_CHARS || HAS_HANGUL_RE.test(inner)) {
@@ -52,8 +57,23 @@ function isShortCitedTitle(rawInner) {
   if (SENTENCE_BOUNDARY_RE.test(inner) || PROSE_OPENER_RE.test(inner)) {
     return false;
   }
-  if (words.length >= 5 && hasEnglishSentenceFiniteWord(words)) {
+  if (words.length >= 4 && hasEnglishSentenceFiniteWord(words)) {
     return false;
+  }
+  if (words.length >= 3) {
+    const rest = words.slice(1);
+    const isImperativeDet =
+      (rest[0] === rest[0].toLowerCase() || (rest[0].length >= 2 && rest[0] === rest[0].toUpperCase())) &&
+      CITED_IMPERATIVE_DETERMINER_RE.test(rest[0].toLowerCase());
+    if (hasWordFlag(words[0].toLowerCase(), IMPERATIVE) && isImperativeDet) {
+      return false;
+    }
+    if (CITED_PROSE_SUBJECT_RE.test(words[0])) {
+      const nonPrepLowerCount = rest.filter((word) => word === word.toLowerCase() && !CITED_TITLE_PREP_RE.test(word)).length;
+      if ((rest[0] === rest[0].toLowerCase() && !CITED_TITLE_PREP_RE.test(rest[0])) || nonPrepLowerCount >= 2) {
+        return false;
+      }
+    }
   }
   if (words.length >= 6 && countEnglishFunctionWords(words) >= 2) {
     return false;
@@ -228,9 +248,6 @@ function makeLine(text, paragraph) {
     text,
     paragraph,
     structured,
-    get englishWordCount() {
-      return memo("englishWordCount", () => countEnglishWords(text));
-    },
     get cited() {
       return memo("cited", () => stripShortCitedTitlesOnKoreanLine(text));
     },

@@ -150,7 +150,7 @@ function stripInlineCodeBlock(block) {
 }
 
 const INLINE_BLOCK_SINGLE_LINE_RE = /^[ \t]*(?:#{1,6}(?:[ \t]|$)|\|.*\|[ \t]*$)/;
-const INLINE_BLOCK_START_RE = /^[ \t]*(?:[-*+][ \t]+|\d+\.[ \t]+|>)/;
+const INLINE_BLOCK_START_RE = /^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+|>)/;
 
 function splitInlineCodeBlocks(text) {
   const blocks = [];

@@ -1,4 +1,3 @@
-// analyzeField: field-level drift rules evaluated over one shared buildAnalyzedLines result.
 import {
   ENGLISH_RUN_WORD_THRESHOLD,
   MIN_HANGUL_RATIO,
@@ -110,10 +109,6 @@ function hasEnglishWordRun(lines, threshold) {
   return false;
 }
 
-function countNonStructuredEnglishWords(lines) {
-  return proseLinesOf(lines).reduce((total, line) => total + line.englishWordCount, 0);
-}
-
 export function analyzeField(field, rawText, options = {}) {
   const {
     minNaturalChars = MIN_NATURAL_CHARS,
@@ -133,17 +128,11 @@ export function analyzeField(field, rawText, options = {}) {
   const lines = buildAnalyzedLines(naturalText);
 
   if (metrics.naturalCharCount < minNaturalChars) {
-    if (
-      metrics.latinCount >= minLatinCharsForDrift &&
-      countNonStructuredEnglishWords(lines) >= shortEnglishProseWordThreshold
-    ) {
-      if (isShortEnglishProseMetrics(metrics)) {
-        return { ...base, status: "drifted", driftReason: "short_english_prose" };
-      }
+    if (metrics.latinCount >= minLatinCharsForDrift) {
       const proseMetrics = sumProseMetrics(proseLinesOf(lines));
       if (
-        proseMetrics.latinCount >= minLatinCharsForDrift &&
-        proseMetrics.wordCount >= shortEnglishProseWordThreshold
+        proseMetrics.wordCount >= shortEnglishProseWordThreshold &&
+        (proseMetrics.latinCount >= minLatinCharsForDrift || isShortEnglishProseMetrics(metrics))
       ) {
         return { ...base, status: "drifted", driftReason: "short_english_prose" };
       }

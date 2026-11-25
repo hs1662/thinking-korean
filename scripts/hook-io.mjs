@@ -12,7 +12,7 @@ import { parseRawRecord, recordToStep } from "./transcript/steps.mjs";
 const CHUNK_SIZE = 256 * 1024;
 const PREFIX_SCAN_BYTES = 256;
 const NEWLINE_BYTE = 0x0a;
-const PROBE_MAX_BYTES = 64 * 1024;
+const PROBE_MAX_BYTES = 1024 * 1024;
 
 function isAsciiWhitespace(byte) {
   return byte === 0x20 || byte === 0x09 || byte === 0x0d || byte === 0x0a;
@@ -26,48 +26,252 @@ function skipWhitespace(buf, start) {
   return i;
 }
 
-function createJsonBalance() {
-  return { depth: 0, inString: false, escaped: false, closed: false, valid: true };
+const JSON_OBJ = 0;
+const JSON_ARR = 1;
+const LIT_TRUE = [0x72, 0x75, 0x65];
+const LIT_FALSE = [0x61, 0x6c, 0x73, 0x65];
+const LIT_NULL = [0x75, 0x6c, 0x6c];
+
+function isDigit(byte) {
+  return byte >= 0x30 && byte <= 0x39;
 }
 
-function advanceJsonBalance(state, buf, start, end) {
-  if (!state.valid) {
-    return;
+function isHexDigit(byte) {
+  return isDigit(byte) || (byte >= 0x41 && byte <= 0x46) || (byte >= 0x61 && byte <= 0x66);
+}
+
+function isValidEscapeByte(byte) {
+  return (
+    byte === 0x22 ||
+    byte === 0x5c ||
+    byte === 0x2f ||
+    byte === 0x62 ||
+    byte === 0x66 ||
+    byte === 0x6e ||
+    byte === 0x72 ||
+    byte === 0x74
+  );
+}
+
+function createJsonObjectValidator() {
+  return {
+    mode: "root",
+    stack: [],
+    strForKey: false,
+    uniLeft: 0,
+    numState: "",
+    litTarget: null,
+    litPos: 0,
+    valid: true,
+  };
+}
+
+function finishContainerOrValue(state) {
+  state.mode = state.stack.length === 0 ? "done" : "afterVal";
+}
+
+function startJsonValue(state, b) {
+  if (b === 0x22) {
+    state.mode = "string";
+    state.strForKey = false;
+  } else if (b === 0x7b) {
+    state.stack.push(JSON_OBJ);
+    state.mode = "objKeyOrEnd";
+  } else if (b === 0x5b) {
+    state.stack.push(JSON_ARR);
+    state.mode = "arrValOrEnd";
+  } else if (b === 0x2d) {
+    state.mode = "number";
+    state.numState = "sign";
+  } else if (b === 0x30) {
+    state.mode = "number";
+    state.numState = "zero";
+  } else if (b >= 0x31 && b <= 0x39) {
+    state.mode = "number";
+    state.numState = "int";
+  } else if (b === 0x74) {
+    state.mode = "literal";
+    state.litTarget = LIT_TRUE;
+    state.litPos = 0;
+  } else if (b === 0x66) {
+    state.mode = "literal";
+    state.litTarget = LIT_FALSE;
+    state.litPos = 0;
+  } else if (b === 0x6e) {
+    state.mode = "literal";
+    state.litTarget = LIT_NULL;
+    state.litPos = 0;
+  } else {
+    state.valid = false;
   }
-  for (let i = start; i < end; i += 1) {
+}
+
+function advanceJsonObjectValidator(state, buf, start, end) {
+  for (let i = start; i < end && state.valid; i += 1) {
     const b = buf[i];
-    if (state.inString) {
-      if (state.escaped) {
-        state.escaped = false;
+    const mode = state.mode;
+
+    if (mode === "string") {
+      if (b === 0x22) {
+        if (state.strForKey) {
+          state.mode = "objColon";
+        } else {
+          finishContainerOrValue(state);
+        }
       } else if (b === 0x5c) {
-        state.escaped = true;
+        state.mode = "escape";
+      } else if (b < 0x20) {
+        state.valid = false;
+      }
+      continue;
+    }
+
+    if (mode === "escape") {
+      if (b === 0x75) {
+        state.mode = "unicode";
+        state.uniLeft = 4;
+      } else if (isValidEscapeByte(b)) {
+        state.mode = "string";
+      } else {
+        state.valid = false;
+      }
+      continue;
+    }
+
+    if (mode === "unicode") {
+      if (!isHexDigit(b)) {
+        state.valid = false;
+      } else {
+        state.uniLeft -= 1;
+        if (state.uniLeft === 0) {
+          state.mode = "string";
+        }
+      }
+      continue;
+    }
+
+    if (mode === "number") {
+      const ns = state.numState;
+      if (ns === "sign") {
+        if (b === 0x30) state.numState = "zero";
+        else if (b >= 0x31 && b <= 0x39) state.numState = "int";
+        else state.valid = false;
+      } else if (ns === "zero") {
+        if (b === 0x2e) state.numState = "dot";
+        else if (b === 0x65 || b === 0x45) state.numState = "expSign";
+        else {
+          finishContainerOrValue(state);
+          i -= 1;
+        }
+      } else if (ns === "int") {
+        if (isDigit(b)) continue;
+        if (b === 0x2e) state.numState = "dot";
+        else if (b === 0x65 || b === 0x45) state.numState = "expSign";
+        else {
+          finishContainerOrValue(state);
+          i -= 1;
+        }
+      } else if (ns === "dot") {
+        if (isDigit(b)) state.numState = "frac";
+        else state.valid = false;
+      } else if (ns === "frac") {
+        if (isDigit(b)) continue;
+        if (b === 0x65 || b === 0x45) state.numState = "expSign";
+        else {
+          finishContainerOrValue(state);
+          i -= 1;
+        }
+      } else if (ns === "expSign") {
+        if (b === 0x2b || b === 0x2d) state.numState = "exp";
+        else if (isDigit(b)) state.numState = "expDigits";
+        else state.valid = false;
+      } else if (ns === "exp") {
+        if (isDigit(b)) state.numState = "expDigits";
+        else state.valid = false;
+      } else if (ns === "expDigits") {
+        if (isDigit(b)) continue;
+        finishContainerOrValue(state);
+        i -= 1;
+      }
+      continue;
+    }
+
+    if (mode === "literal") {
+      if (b !== state.litTarget[state.litPos]) {
+        state.valid = false;
+      } else {
+        state.litPos += 1;
+        if (state.litPos === state.litTarget.length) {
+          finishContainerOrValue(state);
+        }
+      }
+      continue;
+    }
+
+    if (isAsciiWhitespace(b)) {
+      continue;
+    }
+
+    if (mode === "root") {
+      if (b === 0x7b) {
+        state.stack.push(JSON_OBJ);
+        state.mode = "objKeyOrEnd";
+      } else {
+        state.valid = false;
+      }
+    } else if (mode === "objKeyOrEnd") {
+      if (b === 0x7d) {
+        state.stack.pop();
+        finishContainerOrValue(state);
       } else if (b === 0x22) {
-        state.inString = false;
-      }
-      continue;
-    }
-    if (state.closed) {
-      if (!isAsciiWhitespace(b)) {
+        state.mode = "string";
+        state.strForKey = true;
+      } else {
         state.valid = false;
-        return;
       }
-      continue;
-    }
-    if (b === 0x22) {
-      state.inString = true;
-    } else if (b === 0x7b || b === 0x5b) {
-      state.depth += 1;
-    } else if (b === 0x7d || b === 0x5d) {
-      state.depth -= 1;
-      if (state.depth < 0) {
+    } else if (mode === "objKey") {
+      if (b === 0x22) {
+        state.mode = "string";
+        state.strForKey = true;
+      } else {
         state.valid = false;
-        return;
       }
-      if (state.depth === 0) {
-        state.closed = true;
+    } else if (mode === "objColon") {
+      if (b === 0x3a) {
+        state.mode = "value";
+      } else {
+        state.valid = false;
       }
+    } else if (mode === "arrValOrEnd") {
+      if (b === 0x5d) {
+        state.stack.pop();
+        finishContainerOrValue(state);
+      } else {
+        startJsonValue(state, b);
+      }
+    } else if (mode === "value") {
+      startJsonValue(state, b);
+    } else if (mode === "afterVal") {
+      const top = state.stack[state.stack.length - 1];
+      if (b === 0x2c) {
+        state.mode = top === JSON_OBJ ? "objKey" : "value";
+      } else if (b === 0x7d && top === JSON_OBJ) {
+        state.stack.pop();
+        finishContainerOrValue(state);
+      } else if (b === 0x5d && top === JSON_ARR) {
+        state.stack.pop();
+        finishContainerOrValue(state);
+      } else {
+        state.valid = false;
+      }
+    } else {
+      state.valid = false;
     }
   }
+}
+
+function isValidJsonObjectComplete(state) {
+  return Boolean(state && state.valid && state.mode === "done" && state.stack.length === 0);
 }
 
 function scanJsonStringEnd(buf, openQuoteIdx) {
@@ -170,13 +374,12 @@ function readTranscriptStepsFast(filePath) {
   const prefixBuf = Buffer.allocUnsafe(PREFIX_SCAN_BYTES);
 
   const steps = [];
-  let hasContentBytes = false;
   let validRecordCount = 0;
   let lineState = "undecided";
   let prefixLen = 0;
   let lineChunks = [];
   let lineBytes = 0;
-  let skipBalance = null;
+  let skipValidator = null;
   let isFirstLine = true;
 
   const pushParsed = (rawLine) => {
@@ -206,21 +409,24 @@ function readTranscriptStepsFast(filePath) {
     validRecordCount += 1;
   };
 
-  const startSkipBalance = (buffers) => {
-    skipBalance = createJsonBalance();
+  const startSkipValidator = (buffers) => {
+    skipValidator = createJsonObjectValidator();
     for (let i = 0; i < buffers.length; i += 1) {
       const segment = i === 0 ? stripBomBytes(buffers[i], isFirstLine) : buffers[i];
-      advanceJsonBalance(skipBalance, segment, 0, segment.length);
+      advanceJsonObjectValidator(skipValidator, segment, 0, segment.length);
     }
   };
 
   const appendSegment = (view, start, end) => {
+    if (start >= end) {
+      return;
+    }
     if (lineState === "probe") {
       lineBytes += end - start;
       if (lineBytes > PROBE_MAX_BYTES) {
         lineState = "skip";
-        startSkipBalance(lineChunks);
-        advanceJsonBalance(skipBalance, view, start, end);
+        startSkipValidator(lineChunks);
+        advanceJsonObjectValidator(skipValidator, view, start, end);
         lineChunks = [];
         return;
       }
@@ -230,15 +436,13 @@ function readTranscriptStepsFast(filePath) {
 
   const finalizeLine = () => {
     if (lineState === "skip") {
-      hasContentBytes = true;
-      if (skipBalance && skipBalance.valid && skipBalance.closed && skipBalance.depth === 0 && !skipBalance.inString) {
+      if (isValidJsonObjectComplete(skipValidator)) {
         validRecordCount += 1;
       }
     } else if (lineState === "undecided") {
       const prefixSlice = stripBomBytes(prefixBuf.subarray(0, prefixLen), isFirstLine);
       const rawLine = prefixSlice.toString("utf8");
       if (rawLine.trim().length > 0) {
-        hasContentBytes = true;
         const classification = classifyLinePrefix(prefixSlice);
         if (classification === "skip") {
           if (parseRawRecord(rawLine)) {
@@ -251,7 +455,6 @@ function readTranscriptStepsFast(filePath) {
         }
       }
     } else if (lineChunks.length > 0) {
-      hasContentBytes = true;
       const joined = lineChunks.length === 1 ? lineChunks[0] : Buffer.concat(lineChunks);
       if (lineState === "probe") {
         probeLine(joined);
@@ -265,7 +468,7 @@ function readTranscriptStepsFast(filePath) {
     prefixLen = 0;
     lineChunks = [];
     lineBytes = 0;
-    skipBalance = null;
+    skipValidator = null;
   };
 
   try {
@@ -289,7 +492,7 @@ function readTranscriptStepsFast(filePath) {
             const classification = classifyLinePrefix(stripBomBytes(prefixBuf, isFirstLine));
             lineState = classification === "skip" || classification === "probe" ? classification : "keep";
             if (lineState === "skip") {
-              startSkipBalance([prefixBuf]);
+              startSkipValidator([prefixBuf]);
             } else {
               lineChunks = [Buffer.from(prefixBuf)];
               lineBytes = PREFIX_SCAN_BYTES;
@@ -297,7 +500,7 @@ function readTranscriptStepsFast(filePath) {
           }
         }
         if (lineState === "skip") {
-          advanceJsonBalance(skipBalance, view, pos, segEnd);
+          advanceJsonObjectValidator(skipValidator, view, pos, segEnd);
         } else if (lineState === "keep" || lineState === "probe") {
           appendSegment(view, pos, segEnd);
         }
@@ -308,14 +511,14 @@ function readTranscriptStepsFast(filePath) {
         }
       }
     }
-    if (prefixLen > 0 || lineChunks.length > 0 || skipBalance !== null) {
+    if (prefixLen > 0 || lineChunks.length > 0 || skipValidator !== null) {
       finalizeLine();
     }
   } finally {
     closeSync(fd);
   }
 
-  return { hasContent: hasContentBytes && (steps.length > 0 || validRecordCount > 0), steps };
+  return { hasContent: validRecordCount > 0, steps };
 }
 
 export function resolveTranscriptCandidates(transcriptPath) {
