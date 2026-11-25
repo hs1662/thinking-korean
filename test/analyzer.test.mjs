@@ -735,4 +735,64 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
       assert.notEqual(analyzeUiTexts([label]).status, "drifted", `expected non-drifted for: ${label}`);
     }
   });
+
+  it("isolates stray backticks in parenthesized numbered lists and avoids false positives on short cited Korean lines", () => {
+    const strayBackticksAcrossParenList = [
+      "작업 항목을 정리하면 다음과 같다.",
+      "1) 첫 번째 항목의 짝 없는 `백틱",
+      "2) Now let me write an English explanation inside the next numbered item completely.",
+      "3) 세 번째 항목의 짝 없는 `백틱",
+    ].join("\n");
+    assert.equal(analyzeField("content", strayBackticksAcrossParenList).status, "drifted");
+
+    for (const shortCited of ["확인 (React Cache Store Data)", "확인 **React Cache Store Data**"]) {
+      const analysis = analyzeField("content", shortCited);
+      assert.equal(analysis.status, "insufficient", `expected insufficient for: ${shortCited}`);
+      assert.equal(analysis.driftReason, "none");
+    }
+
+    for (const shortDrift of [
+      "확인 (Now let me check the file)",
+      "확인 (Check the build status)",
+      "확인 (Check the React Router)",
+      "확인 (Fix the Prisma Schema)",
+      "확인 (Update the Node Server)",
+      "확인 (Check ALL build status)",
+      "확인 (It really works well)",
+      "확인 (It breaks React render)",
+      "확인 (This React hook fails)",
+      "확인 (That Prisma query broke)",
+      "응 (I check these files)",
+      "확인 **Check the build status**",
+      "# Build Status\nI will fix it",
+      "Status: Ready\nI will fix it",
+      "- Build\nI will check it",
+      "1) Build\nI will check it",
+    ]) {
+      assert.equal(analyzeField("thinking", shortDrift).status, "drifted", `expected drifted for: ${shortDrift}`);
+    }
+
+    for (const legitCited of [
+      "테스트 전략은 (Test behavior not implementation) 원칙을 따른다.",
+      "메모리 최적화를 위해 (Copy on write semantics) 기법을 적용한다.",
+      "이 라이브러리는 (Open source software license) 조항을 따른다.",
+      "복제 저장소는 (Read after write consistency) 수준을 보장한다.",
+      "네트워크 계층에서 (Load balancing over proxy) 방식으로 분산한다.",
+      "스토리지 엔진은 (Log structured merge tree) 구조를 채택했다.",
+      "참고 (Support for the Legacy API)",
+      "참고 (Start of the Event Stream)",
+      "설계 참고 문서는 **Design of a Modern Compiler** 책의 구성을 따른다.",
+      "아키텍처 개요는 (Review of the System Architecture) 문서를 바탕으로 정리했다.",
+      "참고 (List of all Active Nodes)",
+      "참고 (Call to the External API)",
+      "참고 (Run of the Test Suite)",
+      "복제 일관성 전략은 (Read one write all protocol) 방식을 기준으로 설명한다.",
+      "참고 (This in Strict Mode)",
+      "- 원리: **This in Strict Mode**",
+      "참고 (This in Arrow Functions)",
+      "참고 (This in Class Methods)",
+    ]) {
+      assert.notEqual(analyzeField("content", legitCited).status, "drifted", `expected non-drifted for: ${legitCited}`);
+    }
+  });
 });

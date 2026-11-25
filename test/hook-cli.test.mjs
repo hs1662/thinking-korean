@@ -847,4 +847,101 @@ describe("regression: snake_case hook payload compatibility and corrupt JSON lin
     assert.equal(fastSteps.length, 1);
     assert.equal(fastSteps[0].stepIndex, 1);
   });
+
+  it("rejects syntax-invalid balanced skip lines and preserves oversized GENERIC denial records in fast reader", () => {
+    const dir = createTempDir("thinking-korean-fast-syntax-");
+    const englishStepsCall = {
+      name: "update_steps",
+      args: { steps: [{ title: "Check the build status", status: "in_progress" }] },
+    };
+
+    const balancedSyntaxCorrupt = `{"type":"TOOL_RESULT","payload": ${"x".repeat(300)} }\n`;
+    const trailingCommaCorrupt = `{"type":"TOOL_RESULT","payload":"${"a".repeat(300)}",}\n`;
+    for (const [name, raw] of [
+      ["balanced-syntax.jsonl", balancedSyntaxCorrupt],
+      ["trailing-comma.jsonl", trailingCommaCorrupt],
+    ]) {
+      const filePath = join(dir, name);
+      writeFileSync(filePath, raw, "utf8");
+      const payload = JSON.stringify({
+        hookEventName: "PreToolUse",
+        transcriptPath: filePath,
+        toolCall: englishStepsCall,
+      });
+      assert.deepEqual(handlePreToolUse(payload), { decision: "allow" }, `fast reader should fail open for ${name}`);
+      assert.deepEqual(handlePreToolUse(payload, () => raw), { decision: "allow" }, `text reader should fail open for ${name}`);
+    }
+
+    const indexPath = join(dir, "balanced-index.jsonl");
+    const indexRaw =
+      balancedSyntaxCorrupt +
+      `${JSON.stringify({ type: "PLANNER_RESPONSE", thinking: "한국어 추론으로 정상 처리한다.", content: "정상 응답입니다." })}\n`;
+    writeFileSync(indexPath, indexRaw, "utf8");
+    const fastIdxSteps = readTranscriptSteps(indexPath);
+    const textIdxSteps = readTranscriptSteps(indexPath, () => indexRaw);
+    assert.deepEqual(fastIdxSteps, textIdxSteps);
+    assert.equal(fastIdxSteps[0].stepIndex, 0);
+
+    for (const [name, record] of [
+      [
+        "oversized-denial-error-first.jsonl",
+        {
+          type: "GENERIC",
+          status: "ERROR",
+          meta: "m".repeat(1200),
+          error: `${PRE_TOOL_DENIAL_NEEDLE}: 작업 단계 제목을 한국어로 바꿔라`,
+          content: "a".repeat(70 * 1024),
+        },
+      ],
+      [
+        "oversized-denial-error-after-content.jsonl",
+        {
+          type: "GENERIC",
+          status: "ERROR",
+          content: "a".repeat(70 * 1024),
+          error: `${PRE_TOOL_DENIAL_NEEDLE}: 작업 단계 제목을 한국어로 바꿔라`,
+        },
+      ],
+      [
+        "oversized-denial-tail-line.jsonl",
+        {
+          type: "GENERIC",
+          status: "ERROR",
+          content: `${"x".repeat(70 * 1024)}\n${PRE_TOOL_DENIAL_NEEDLE}: 한국어 규칙 위반`,
+        },
+      ],
+    ]) {
+      const filePath = join(dir, name);
+      const raw = `${JSON.stringify(record)}\n`;
+      writeFileSync(filePath, raw, "utf8");
+      assert.deepEqual(
+        readTranscriptSteps(filePath),
+        readTranscriptSteps(filePath, () => raw),
+        `fast and text readers must match for ${name}`,
+      );
+      assert.equal(readTranscriptSteps(filePath).length, 1, `expected denial step for ${name}`);
+    }
+
+    const richValidAndBadPath = join(dir, "rich-json-parity.jsonl");
+    const richValid = JSON.stringify({
+      type: "TOOL_RESULT",
+      pad: "p".repeat(300),
+      nums: [0, -12, 3.14, 1e5, -2.5e-3],
+      flags: [true, false, null],
+      escaped: "line\n\t\"\\/\u0041",
+      empty: [{}, []],
+    });
+    const badEscape = `{"type":"TOOL_RESULT","pad":"${"p".repeat(300)}","bad":"\\x20"}\n`;
+    const badLeadingZero = `{"type":"TOOL_RESULT","pad":"${"p".repeat(300)}","n":01}\n`;
+    const richRaw =
+      `${richValid}\n` +
+      badEscape +
+      badLeadingZero +
+      `${JSON.stringify({ type: "PLANNER_RESPONSE", thinking: "한국어 추론으로 결과를 검증한다.", content: "정상 응답입니다." })}\n`;
+    writeFileSync(richValidAndBadPath, richRaw, "utf8");
+    const richFast = readTranscriptSteps(richValidAndBadPath);
+    const richText = readTranscriptSteps(richValidAndBadPath, () => richRaw);
+    assert.deepEqual(richFast, richText);
+    assert.equal(richFast[0].stepIndex, 1);
+  });
 });
