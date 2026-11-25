@@ -861,4 +861,16 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
+
+  it("trims UI token edge punctuation in linear time without quadratic TOKEN_EDGE_PUNCT_RE backtracking", () => {
+    const punctRunToken = `${")".repeat(35_000)}A`;
+    const sample = `React Router ${punctRunToken}`;
+    const startMs = performance.now();
+    const analysis = analyzeUiTexts([sample]);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time UI analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.notEqual(analysis.status, "drifted");
+    assert.equal(analyzeUiTexts(["(Check) [build] status!"]).status, "drifted");
+  });
 });
