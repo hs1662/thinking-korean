@@ -795,4 +795,15 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
       assert.notEqual(analyzeField("content", legitCited).status, "drifted", `expected non-drifted for: ${legitCited}`);
     }
   });
+
+  it("strips uppercase technical runs in linear time without catastrophic backtracking on trailing lowercase digits", () => {
+    const token = `AA${"1".repeat(26)}a`;
+    const sample = `해시 토큰 ${token} 과 HTTP2, H264, UTF8MB4, SHA256SUMS 값을 한국어로 확인하고 검증한다.`;
+    const startMs = performance.now();
+    const analysis = analyzeField("content", sample);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.equal(analysis.status, "korean");
+  });
 });
