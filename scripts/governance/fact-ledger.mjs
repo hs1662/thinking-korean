@@ -8,6 +8,7 @@ import {
   CREATE_AS_READ_TOOL_NAMES,
   EXEC_TOOL_NAMES,
   GATE_TOOL_NAME,
+  MCP_VERIFICATION_TOOL_NAMES,
   PASSING_VERDICTS,
   READ_ONLY_BINARIES,
   READ_ONLY_GIT_SUBCOMMANDS,
@@ -18,6 +19,7 @@ import {
   isExemptDocOrAssetPath,
 } from "./constants.mjs";
 
+const RESULT_HEAD_MAX_CHARS = 256;
 const RESULT_TAIL_MAX_CHARS = 2048;
 const GIT_TIMEOUT_MS = 1500;
 const MAX_UNWRAP_DEPTH = 2;
@@ -34,6 +36,9 @@ const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const EXIT_CODE_FAIL_RE = /exit\s+code[:\s]+[1-9]\d*/i;
 const TAP_FAIL_ZERO_RE = /(?:^|\n)[ \t]*(?:#|ℹ)[ \t]*fail[ \t]+0\b/m;
 const TAP_FAIL_NONZERO_RE = /(?:^|\n)[ \t]*(?:#|ℹ)[ \t]*fail[ \t]+[1-9]\d*\b/m;
+const RUN_CHECKS_FAIL_HEADER_RE = /^Checks:\s+\d+\/\d+\s+passed,\s+(?:[1-9]\d*\s+failed|[1-9]\d*\s+not run)\b/m;
+const RUN_CHECKS_ALL_PASSED_HEADER_RE = /^Checks:\s+(\d+)\/\1\s+passed\b(?!,\s*[1-9]\d*\s+(?:failed|not run)\b)/m;
+const RUN_CHECKS_FAIL_BLOCK_RE = /^##\s+\[(?:FAIL|NOT RUN)\]/m;
 const PASSING_TEST_LINE_RE = /^\s*(?:ok\s+\d+|ok\b|✔|✓|#\s*Subtest:|▶)/;
 const FAILURE_LINE_PATTERNS = [
   EXIT_CODE_FAIL_RE,
@@ -398,7 +403,22 @@ export function inferExecutionFailure(result) {
   if (typeof result.error === "string" && result.error.trim().length > 0) {
     return true;
   }
+  const head = typeof result.head === "string" ? result.head : "";
   const tail = typeof result.tail === "string" ? result.tail : typeof result.content === "string" ? result.content : "";
+  if (head.length === 0 && tail.length === 0) {
+    return false;
+  }
+  if (
+    RUN_CHECKS_FAIL_HEADER_RE.test(head) ||
+    RUN_CHECKS_FAIL_HEADER_RE.test(tail) ||
+    RUN_CHECKS_FAIL_BLOCK_RE.test(head) ||
+    RUN_CHECKS_FAIL_BLOCK_RE.test(tail)
+  ) {
+    return true;
+  }
+  if (RUN_CHECKS_ALL_PASSED_HEADER_RE.test(head) || RUN_CHECKS_ALL_PASSED_HEADER_RE.test(tail)) {
+    return false;
+  }
   if (tail.length === 0) {
     return false;
   }
@@ -509,6 +529,67 @@ function extractCommandLine(call) {
     return "";
   }
   return pickString(args, ["CommandLine", "commandLine", "command"]);
+}
+
+export function extractMcpCheckCommands(call) {
+  const args = asObject(call?.args);
+  if (!args) {
+    return { commands: [], labels: [] };
+  }
+  const commands = [];
+  const labels = [];
+  const rawList = asArray(args.commands) ?? asArray(args.checks);
+  if (rawList) {
+    for (const rawItem of rawList) {
+      if (typeof rawItem === "string") {
+        const trimmed = rawItem.trim();
+        if (trimmed.length > 0) {
+          commands.push(trimmed);
+        }
+        continue;
+      }
+      const item = asObject(rawItem);
+      if (!item) {
+        continue;
+      }
+      const cmd = pickString(item, ["command", "CommandLine", "commandLine"]);
+      if (cmd.length > 0) {
+        commands.push(cmd);
+      }
+      const label = pickString(item, ["name", "label"]);
+      if (label.length > 0) {
+        labels.push(label);
+      }
+    }
+  } else {
+    const single = pickString(args, ["command", "CommandLine", "commandLine"]);
+    if (single.length > 0) {
+      commands.push(single);
+    }
+  }
+  return { commands, labels };
+}
+
+function classifyMcpCheckCommands(commands) {
+  if (commands.length === 0) {
+    return "verification";
+  }
+  return commands.some((cmd) => classifyCommand(cmd) !== "read_only") ? "verification" : "read_only";
+}
+
+function extractHead(content) {
+  if (typeof content !== "string" || content.length === 0) {
+    return "";
+  }
+  if (content.length <= RESULT_HEAD_MAX_CHARS) {
+    return content;
+  }
+  let end = RESULT_HEAD_MAX_CHARS;
+  const code = content.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) {
+    end -= 1;
+  }
+  return content.slice(0, end);
 }
 
 function extractTail(content) {
@@ -727,6 +808,22 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
             };
             ledger.turnExecutions.push(entry);
             pendingCalls.push({ kind: "exec", entry });
+          } else if (MCP_VERIFICATION_TOOL_NAMES.has(name)) {
+            const { commands, labels } = extractMcpCheckCommands(call);
+            const entry = {
+              stepIndex,
+              toolName: name,
+              command: commands.join(" && ") || name,
+              subCommands: commands,
+              checkLabels: labels,
+              kind: classifyMcpCheckCommands(commands),
+              passed: true,
+              status: "",
+              error: "",
+              tail: "",
+            };
+            ledger.turnExecutions.push(entry);
+            pendingCalls.push({ kind: "exec", entry });
           } else if (name === GATE_TOOL_NAME) {
             const entry = {
               stepIndex,
@@ -754,10 +851,18 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
 
         if (pending.kind === "exec") {
           const tail = extractTail(parsed.content);
+          const head = pending.entry.toolName ? extractHead(parsed.content) : "";
+          const hasFailBlock =
+            Boolean(pending.entry.toolName) &&
+            typeof parsed.content === "string" &&
+            RUN_CHECKS_FAIL_BLOCK_RE.test(parsed.content);
           pending.entry.status = status;
           pending.entry.error = error;
           pending.entry.tail = tail;
-          pending.entry.passed = !isPreToolDenialStep(parsed) && !inferExecutionFailure({ status, error, tail });
+          pending.entry.passed =
+            !isPreToolDenialStep(parsed) &&
+            !hasFailBlock &&
+            !inferExecutionFailure({ status, error, head, tail });
         } else if (pending.kind === "gate") {
           const verdict = parseGateVerdictFromText(typeof parsed.content === "string" ? parsed.content : "");
           pending.entry.verdict = verdict;

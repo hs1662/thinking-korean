@@ -832,3 +832,201 @@ describe("Patch A: unverified_scope filler normalization, metrics, and audit cop
     assert.equal(analyzeField("content", desc).status, "korean");
   });
 });
+
+describe("Patch B: agy-fast mcp_agy-fast_fast_run_checks gate evaluation", () => {
+  it("passes when verification_runs claims executed sub-command, tool name, or check label from mcp_agy-fast_fast_run_checks", () => {
+    const mcpLedger = makeLedger({
+      turnExecutions: [
+        {
+          stepIndex: 5,
+          toolName: "mcp_agy-fast_fast_run_checks",
+          command: "node --test && agy plugin validate --strict --json .",
+          subCommands: ["node --test", "agy plugin validate --strict --json ."],
+          checkLabels: ["unit-tests", "plugin-validate"],
+          kind: "verification",
+          passed: true,
+          status: "DONE",
+          error: "",
+          tail: "Checks: 2/2 passed (wall: 420ms)",
+        },
+      ],
+    });
+
+    for (const claimed of ["node --test", "mcp_agy-fast_fast_run_checks", "unit-tests"]) {
+      const res = decideGate(
+        makeInput({ verification_runs: [{ command: claimed, outcome: "pass" }] }),
+        {
+          ledger: mcpLedger,
+          gitLedger: makeGitLedger(),
+          testInfra: { hasTestSuite: true, indicators: ["test/"] },
+        },
+      );
+      assert.equal(res.verdict, "PASS", `expected PASS for claim ${claimed}`);
+      assert.deepEqual(res.blockedRules, []);
+    }
+  });
+
+  it("blocks with R3_CONCEALED_FAILURE when mcp_agy-fast_fast_run_checks fails and resolves when rerun passes", () => {
+    const failedRun = decideGate(
+      makeInput({ verification_runs: [{ command: "node --test", outcome: "pass" }] }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [
+            {
+              stepIndex: 5,
+              toolName: "mcp_agy-fast_fast_run_checks",
+              command: "node --test && npm run lint",
+              subCommands: ["node --test", "npm run lint"],
+              checkLabels: ["unit", "lint"],
+              kind: "verification",
+              passed: false,
+              status: "DONE",
+              error: "",
+              tail: "Checks: 1/2 passed, 1 failed (wall: 500ms)",
+            },
+          ],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(failedRun.verdict, "REJECT");
+    assert.deepEqual(failedRun.blockedRules, ["R3_CONCEALED_FAILURE"]);
+
+    const resolvedRun = decideGate(
+      makeInput({
+        verification_runs: [
+          { command: "node --test", outcome: "pass" },
+          { command: "npm run lint", outcome: "pass" },
+        ],
+      }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [
+            {
+              stepIndex: 5,
+              toolName: "mcp_agy-fast_fast_run_checks",
+              command: "node --test && npm run lint",
+              subCommands: ["node --test", "npm run lint"],
+              checkLabels: ["unit", "lint"],
+              kind: "verification",
+              passed: false,
+            },
+            {
+              stepIndex: 7,
+              toolName: "mcp_agy-fast_fast_run_checks",
+              command: "node --test && npm run lint",
+              subCommands: ["node --test", "npm run lint"],
+              checkLabels: ["unit", "lint"],
+              kind: "verification",
+              passed: true,
+            },
+          ],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(resolvedRun.verdict, "PASS");
+    assert.deepEqual(resolvedRun.blockedRules, []);
+  });
+
+  it("blocks with R5_FABRICATED_COMMAND when claiming an unrelated command not present in mcp_agy-fast_fast_run_checks", () => {
+    const res = decideGate(
+      makeInput({ verification_runs: [{ command: "npm run e2e", outcome: "pass" }] }),
+      {
+        ledger: makeLedger({
+          turnExecutions: [
+            {
+              stepIndex: 5,
+              toolName: "mcp_agy-fast_fast_run_checks",
+              command: "node --test",
+              subCommands: ["node --test"],
+              checkLabels: ["unit"],
+              kind: "verification",
+              passed: true,
+            },
+          ],
+        }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(res.verdict, "REJECT");
+    assert.deepEqual(res.blockedRules, ["R5_FABRICATED_COMMAND"]);
+    assert.deepEqual(res.details.fabricatedCommands, ["npm run e2e"]);
+  });
+
+  it("evaluates end-to-end transcript with edit_file -> mcp_agy-fast_fast_run_checks (fail via header/ERROR -> R3, pass -> PASS)", async () => {
+    const { readFactLedger } = await import("../scripts/governance/fact-ledger.mjs");
+    const { toJsonl } = await import("./helpers.mjs");
+    const dir = createTempDir("hstack-mcp-e2e-");
+
+    const failPath = join(dir, "fail.jsonl");
+    writeFileSync(
+      failPath,
+      toJsonl([
+        { step_index: 0, type: "USER_INPUT", content: "수정하고 검증해 줘" },
+        { step_index: 1, type: "PLANNER_RESPONSE", tool_calls: [{ name: "read_file", args: { Path: "/repo/src/app.mjs" } }] },
+        { step_index: 2, type: "GENERIC", status: "DONE", content: "export const a = 1;" },
+        { step_index: 3, type: "PLANNER_RESPONSE", tool_calls: [{ name: "edit_file", args: { Path: "/repo/src/app.mjs" } }] },
+        { step_index: 4, type: "GENERIC", status: "DONE", content: "ok" },
+        {
+          step_index: 5,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            {
+              name: "mcp_agy-fast_fast_run_checks",
+              args: { commands: [{ name: "lint", command: "npm run lint" }, { name: "unit", command: "node --test" }] },
+            },
+          ],
+        },
+        {
+          step_index: 6,
+          type: "GENERIC",
+          status: "DONE",
+          content: `Checks: 1/2 passed, 1 failed (wall: 500ms)\n## [FAIL] lint (50ms)\nerror\n## [PASS] unit (450ms)\n${"ok\n".repeat(1200)}`,
+        },
+      ]),
+      "utf8",
+    );
+    const failLedger = readFactLedger(failPath, "/repo", "/repo");
+    const failDecision = decideGate(
+      makeInput({ verification_runs: [{ command: "node --test", outcome: "pass" }] }),
+      { ledger: failLedger, gitLedger: makeGitLedger(), testInfra: { hasTestSuite: true, indicators: ["test/"] } },
+    );
+    assert.equal(failDecision.verdict, "REJECT");
+    assert.deepEqual(failDecision.blockedRules, ["R3_CONCEALED_FAILURE"]);
+
+    const passPath = join(dir, "pass.jsonl");
+    writeFileSync(
+      passPath,
+      toJsonl([
+        { step_index: 0, type: "USER_INPUT", content: "수정하고 검증해 줘" },
+        { step_index: 1, type: "PLANNER_RESPONSE", tool_calls: [{ name: "read_file", args: { Path: "/repo/src/app.mjs" } }] },
+        { step_index: 2, type: "GENERIC", status: "DONE", content: "export const a = 1;" },
+        { step_index: 3, type: "PLANNER_RESPONSE", tool_calls: [{ name: "edit_file", args: { Path: "/repo/src/app.mjs" } }] },
+        { step_index: 4, type: "GENERIC", status: "DONE", content: "ok" },
+        {
+          step_index: 5,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            {
+              name: "mcp_agy-fast_fast_run_checks",
+              args: { commands: [{ name: "unit", command: "node --test" }] },
+            },
+          ],
+        },
+        { step_index: 6, type: "GENERIC", status: "DONE", content: "Checks: 1/1 passed (wall: 300ms)\n## [PASS] unit (300ms)\n" },
+      ]),
+      "utf8",
+    );
+    const passLedger = readFactLedger(passPath, "/repo", "/repo");
+    const passDecision = decideGate(
+      makeInput({ verification_runs: [{ command: "mcp_agy-fast_fast_run_checks", outcome: "pass" }] }),
+      { ledger: passLedger, gitLedger: makeGitLedger(), testInfra: { hasTestSuite: true, indicators: ["test/"] } },
+    );
+    assert.equal(passDecision.verdict, "PASS");
+    assert.deepEqual(passDecision.blockedRules, []);
+  });
+});

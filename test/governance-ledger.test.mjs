@@ -9,6 +9,7 @@ import { GATE_TOOL_NAME, VERDICT_HEADERS, isExemptDocOrAssetPath } from "../scri
 import {
   classifyCommand,
   detectTestInfrastructure,
+  extractMcpCheckCommands,
   extractToolPaths,
   inferExecutionFailure,
   normalizeWorkspacePath,
@@ -533,5 +534,196 @@ describe("audit regression tests (fact-ledger and streamTranscriptRecords)", () 
     assert.equal(classifyCommand("git status 2>&1"), "read_only");
     assert.equal(classifyCommand("ls -la 2>/dev/null"), "read_only");
     assert.equal(classifyCommand('echo "a > b"'), "read_only");
+  });
+});
+
+describe("Patch B: agy-fast mcp_agy-fast_fast_run_checks ledger recognition", () => {
+  it("extracts commands and check labels from object, stringified JSON, checks fallback, and single command", () => {
+    assert.deepEqual(
+      extractMcpCheckCommands({
+        name: "mcp_agy-fast_fast_run_checks",
+        args: {
+          cwd: "/repo",
+          commands: [
+            { name: "unit", command: "node --test test/app.test.mjs" },
+            { name: "lint", command: "npm run lint" },
+          ],
+        },
+      }),
+      {
+        commands: ["node --test test/app.test.mjs", "npm run lint"],
+        labels: ["unit", "lint"],
+      },
+    );
+
+    assert.deepEqual(
+      extractMcpCheckCommands({
+        name: "mcp_agy-fast_fast_run_checks",
+        args: JSON.stringify({ checks: ["pytest -q", { label: "typecheck", command: "tsc --noEmit" }] }),
+      }),
+      {
+        commands: ["pytest -q", "tsc --noEmit"],
+        labels: ["typecheck"],
+      },
+    );
+
+    assert.deepEqual(
+      extractMcpCheckCommands({
+        name: "mcp_agy-fast_fast_run_checks",
+        args: { command: "cargo test" },
+      }),
+      {
+        commands: ["cargo test"],
+        labels: [],
+      },
+    );
+  });
+
+  it("tracks mcp_agy-fast_fast_run_checks GENERIC results for pass, head-truncated fail, FAIL block, ERROR status, and read-only checks", () => {
+    const dir = createTempDir("hstack-run-checks-");
+    const transcriptPath = join(dir, "transcript_full.jsonl");
+    const longPassingLog = `${"ok line\n".repeat(400)}ℹ tests 5\nℹ pass 5\nℹ fail 0\n`;
+
+    writeFileSync(
+      transcriptPath,
+      toJsonl([
+        { step_index: 0, type: "USER_INPUT", content: "수정 후 검증해 줘" },
+        {
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [{ name: "edit_file", args: { Path: "/repo/src/app.mjs" } }],
+        },
+        { step_index: 2, type: "GENERIC", status: "DONE", content: "ok" },
+        {
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            {
+              name: "mcp_agy-fast_fast_run_checks",
+              args: {
+                cwd: "/repo",
+                commands: [
+                  { name: "unit", command: "node --test" },
+                  { name: "validate", command: "agy plugin validate --strict --json ." },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          step_index: 4,
+          type: "GENERIC",
+          status: "DONE",
+          content: `Checks: 2/2 passed (wall: 450ms)\n## [PASS] unit (220ms)\n${longPassingLog}## [PASS] validate (230ms)\nvalid`,
+        },
+        {
+          step_index: 5,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            {
+              name: "mcp_agy-fast_fast_run_checks",
+              args: {
+                commands: [
+                  { name: "lint", command: "npm run lint" },
+                  { name: "unit", command: "node --test" },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          step_index: 6,
+          type: "GENERIC",
+          status: "DONE",
+          content: `Checks: 1/2 passed, 1 failed (wall: 600ms)\n## [FAIL] lint (120ms)\nlint error\n## [PASS] unit (480ms)\n${longPassingLog}`,
+        },
+        {
+          step_index: 7,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            {
+              name: "mcp_agy-fast_fast_run_checks",
+              args: {
+                commands: [{ name: "slow", command: "npm run check" }],
+              },
+            },
+          ],
+        },
+        {
+          step_index: 8,
+          type: "GENERIC",
+          status: "DONE",
+          content: `Checks: 0/1 passed, 1 not run (call time budget exceeded)\n## [NOT RUN] slow\n`,
+        },
+        {
+          step_index: 9,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            {
+              name: "mcp_agy-fast_fast_run_checks",
+              args: {
+                commands: [{ name: "status", command: "git status" }],
+              },
+            },
+          ],
+        },
+        {
+          step_index: 10,
+          type: "GENERIC",
+          status: "ERROR",
+          error: "MCP tool error",
+          content: "",
+        },
+      ]),
+      "utf8",
+    );
+
+    const ledger = readFactLedger(transcriptPath, "/repo", "/repo");
+    assert.equal(ledger.turnExecutions.length, 4);
+
+    assert.equal(ledger.turnExecutions[0].toolName, "mcp_agy-fast_fast_run_checks");
+    assert.equal(ledger.turnExecutions[0].kind, "verification");
+    assert.equal(ledger.turnExecutions[0].passed, true);
+    assert.deepEqual(ledger.turnExecutions[0].subCommands, ["node --test", "agy plugin validate --strict --json ."]);
+    assert.deepEqual(ledger.turnExecutions[0].checkLabels, ["unit", "validate"]);
+
+    assert.equal(ledger.turnExecutions[1].kind, "verification");
+    assert.equal(ledger.turnExecutions[1].passed, false);
+
+    assert.equal(ledger.turnExecutions[2].kind, "verification");
+    assert.equal(ledger.turnExecutions[2].passed, false);
+
+    assert.equal(ledger.turnExecutions[3].kind, "read_only");
+    assert.equal(ledger.turnExecutions[3].passed, false);
+  });
+
+  it("inferExecutionFailure distinguishes passing run_checks headers from failed or not-run headers", () => {
+    assert.equal(
+      inferExecutionFailure({
+        status: "DONE",
+        error: "",
+        head: "Checks: 2/2 passed (wall: 450ms)\n## [PASS] unit (200ms)\n",
+        tail: "AssertionError mentioned inside passing test title\n",
+      }),
+      false,
+    );
+    assert.equal(
+      inferExecutionFailure({
+        status: "DONE",
+        error: "",
+        head: "Checks: 1/2 passed, 1 failed (wall: 500ms)\n",
+        tail: "ℹ tests 10\nℹ pass 10\nℹ fail 0\n",
+      }),
+      true,
+    );
+    assert.equal(
+      inferExecutionFailure({
+        status: "DONE",
+        error: "",
+        head: "",
+        tail: "## [FAIL] lint (90ms)\nerror found\n",
+      }),
+      true,
+    );
   });
 });

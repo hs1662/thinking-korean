@@ -71,6 +71,37 @@ function isCommandResolvedBy(failedCmd, passedCmd) {
   return failedSegments.every((failedSeg) => passedSegments.some((passedSeg) => segmentResolvedBy(failedSeg, passedSeg)));
 }
 
+function extractExecutionVerificationSegments(exec) {
+  const candidates =
+    Array.isArray(exec?.subCommands) && exec.subCommands.length > 0 ? exec.subCommands : [exec?.command ?? ""];
+  const segments = [];
+  for (const cmd of candidates) {
+    for (const seg of extractVerificationSegments(cmd)) {
+      segments.push(seg);
+    }
+  }
+  return segments;
+}
+
+function isExecutionResolvedBy(failedExec, passedExec) {
+  if (isCommandResolvedBy(failedExec?.command, passedExec?.command)) {
+    return true;
+  }
+  const failedSegments = extractExecutionVerificationSegments(failedExec);
+  const passedSegments = extractExecutionVerificationSegments(passedExec);
+  if (failedSegments.length > 0 && passedSegments.length > 0) {
+    return failedSegments.every((failedSeg) => passedSegments.some((passedSeg) => segmentResolvedBy(failedSeg, passedSeg)));
+  }
+  const hasSubCommands = Array.isArray(failedExec?.subCommands) && failedExec.subCommands.length > 0;
+  return Boolean(
+    !hasSubCommands &&
+      failedExec?.toolName &&
+      passedExec?.toolName &&
+      failedExec.toolName === passedExec.toolName &&
+      failedSegments.length === 0,
+  );
+}
+
 function normalizePathList(items, cwd, gitRoot) {
   if (!Array.isArray(items)) {
     return [];
@@ -188,6 +219,48 @@ function commandMatchesExecution(normClaim, execCommand) {
   return allowPrefixMatch && normExec.startsWith(`${normClaim} `);
 }
 
+function mcpToolAliases(toolName) {
+  if (typeof toolName !== "string" || toolName.length === 0) {
+    return [];
+  }
+  const aliases = [toolName];
+  if (toolName === "mcp_agy-fast_fast_run_checks") {
+    aliases.push("fast_run_checks", "run_checks");
+  }
+  return aliases;
+}
+
+function claimMatchesExecution(normClaim, exec) {
+  if (normClaim.length === 0 || !exec) {
+    return false;
+  }
+  if (commandMatchesExecution(normClaim, exec.command)) {
+    return true;
+  }
+  if (Array.isArray(exec.subCommands)) {
+    for (const subCmd of exec.subCommands) {
+      if (commandMatchesExecution(normClaim, subCmd)) {
+        return true;
+      }
+    }
+  }
+  if (typeof exec.toolName === "string" && exec.toolName.length > 0) {
+    for (const alias of mcpToolAliases(exec.toolName)) {
+      if (normClaim === alias) {
+        return true;
+      }
+    }
+  }
+  if (Array.isArray(exec.checkLabels)) {
+    for (const label of exec.checkLabels) {
+      if (typeof label === "string" && normalizeCommandText(label) === normClaim) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function decideGate(input = {}, context = {}) {
   const register = ALLOWED_SCHEMA_REGISTERS.has(context.register) ? context.register : "neutral";
   const cwd = typeof context.cwd === "string" ? context.cwd : "";
@@ -289,7 +362,7 @@ export function decideGate(input = {}, context = {}) {
         if (!later.passed) {
           continue;
         }
-        if (isCommandResolvedBy(exec.command, later.command)) {
+        if (isExecutionResolvedBy(exec, later)) {
           resolvedByLaterPass = true;
           break;
         }
@@ -336,7 +409,7 @@ export function decideGate(input = {}, context = {}) {
     const normClaim = normalizeCommandText(run.command);
     const matchingExecs =
       normClaim.length > 0
-        ? postWriteExecutions.filter((exec) => exec.kind !== "read_only" && commandMatchesExecution(normClaim, exec.command))
+        ? postWriteExecutions.filter((exec) => exec.kind !== "read_only" && claimMatchesExecution(normClaim, exec))
         : [];
     const matchedPass = matchingExecs.some((exec) => exec.passed === true);
     const coveredByR3Failure =

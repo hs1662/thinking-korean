@@ -38,6 +38,8 @@ export const CREATE_AS_READ_TOOL_NAMES = new Set(["write_file", "write_to_file"]
 
 export const EXEC_TOOL_NAMES = new Set(["run_command"]);
 
+export const MCP_VERIFICATION_TOOL_NAMES = new Set(["mcp_agy-fast_fast_run_checks"]);
+
 export const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   "status",
   "diff",
