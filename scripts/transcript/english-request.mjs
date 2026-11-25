@@ -40,7 +40,7 @@ const LANG_CANONICAL_MAP = new Map([
   ["외국어", "foreign"],
 ]);
 
-const KO_COMPLAINT_PREFIX_GUARD = "(?<!(?:왜|자꾸만?|계속(?:해서)?)(?:\\s+[가-힣]{1,4}){0,2}\\s+)";
+const KO_COMPLAINT_PREFIX_GUARD = "(?<!(?:왜|자꾸만?|계속(?:해서)?)(?:\\s+[가-힣]{1,8}){0,2}\\s*)";
 const KO_REQUEST_NOUN_ACTION = "(?:번역|영작|작성|답변|대답|답장|응답|설명|요약|정리|출력|변환|표현|교정)";
 const KO_REQUEST_NOUN_ENDING =
   "(?:해\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|주시기|주길|라|달라|보여\\s*줘|보여주세요)|해서\\s*(?:(?:보여|알려)\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|달라|라)|보여주세요|보여줘|알려주세요|알려줘)|해주세요|해줘|해라|하라|하시오|하십시오|하세요(?!\\?)|하고(?=,|\\s)|하길\\s*바라|하기\\s*바라|하기를\\s*바라|하길\\s*원해|하기\\s*원해|하기를\\s*원해|(?:[을를]\\s*|(?<=\\s))(?:원해|원해요|원합니다|바라|바래|바랍니다)|(?:[을를]\\s*)?부탁(?:해|해요|합니다|드립니다|드려요)?|해(?=$|[.!,;\\n])|해요(?=$|[.!,;\\s])|:(?=$|\\s))";
@@ -69,8 +69,8 @@ const EN_REASONING_KOREAN_RE =
   /\b(?:keep|do|write|leave)\s+(?:(?:your|the|internal)\s+)?(?:thinking|reasoning|thoughts?|steps?|checklists?)\s+(?:in|into)\s+korean\b/gi;
 
 const KO_KOREAN_OUTPUT_REQUEST_RE = new RegExp(
-  `${KO_COMPLAINT_PREFIX_GUARD}(?:한국어|한글|국문)로(?:만|도|은|는)?\\s*(?:(?<=\\s)(?!${FOREIGN_LANG_KO}${KO_RO_PARTICLE}\\s)(?!(?:한국어|한글|국문)로(?:만|도|은|는)?\\s)(?!왜\\s|자꾸만?\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:(?:요약|분석|설명|작성|정리|번역|출력|답변|대답|응답)\\s*${KO_REQUEST_NOUN_ENDING}|(?:고쳐|말해|답해|답하|써|바꿔|옮겨|옮기|알려|보여)(?:\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|라|달라)|세요(?!\\?)|시오|십시오|(?=$|[.!,;\\n])|요(?=$|[.!,;\\s]))|(?:해\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|라|달라)|해주세요|해줘|해라|하세요(?!\\?)|하시오|하십시오|해(?=$|[.!,;\\n])|해요(?=$|[.!,;\\s])))` +
-    `|${KO_COMPLAINT_PREFIX_GUARD}(?:${KO_REQUEST_NOUN_ACTION}|번역(?:본|문)|요약(?:본|문)|초안)(?:\\s*언어)?(?:[은는도만이가]|[을를]|\\s*:)?\\s*(?:(?<=\\s)(?!(?:한국어|한글|국문)로(?:만|도|은|는)?\\s)(?!왜\\s|자꾸만?\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:한국어|한글|국문)로(?:만|도|은|는)?(?:요?(?=$|[.!,;\\n])|\\s*${KO_REQUEST_NOUN_ENDING})`,
+  `(?:한국어|한글|국문)로(?:만|도|은|는)?\\s*(?:(?<=\\s)(?!${FOREIGN_LANG_KO}${KO_RO_PARTICLE}\\s)(?!(?:한국어|한글|국문)로(?:만|도|은|는)?\\s)(?!왜\\s*|자꾸만?\\s*)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:(?:요약|분석|설명|작성|정리|번역|출력|답변|대답|응답)\\s*${KO_REQUEST_NOUN_ENDING}|(?:고쳐|말해|답해|답하|써|바꿔|옮겨|옮기|알려|보여)(?:\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|라|달라)|세요(?!\\?)|시오|십시오|(?=$|[.!,;\\n])|요(?=$|[.!,;\\s]))|(?:해\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|라|달라)|해주세요|해줘|해라|하세요(?!\\?)|하시오|하십시오|해(?=$|[.!,;\\n])|해요(?=$|[.!,;\\s])))` +
+    `|(?:${KO_REQUEST_NOUN_ACTION}|번역(?:본|문)|요약(?:본|문)|초안)(?:\\s*언어)?(?:[은는도만이가]|[을를]|\\s*:)?\\s*(?:(?<=\\s)(?!(?:한국어|한글|국문)로(?:만|도|은|는)?\\s)(?!왜\\s*|자꾸만?\\s*)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:한국어|한글|국문)로(?:만|도|은|는)?(?:요?(?=$|[.!,;\\n])|\\s*${KO_REQUEST_NOUN_ENDING})`,
 );
 
 const KO_INTERMEDIATE_BLOCKLIST_RE =
@@ -83,12 +83,12 @@ const KO_SOURCE_OBJECT_RE =
 const KO_CONSUME_ACTIONS = new Set(["설명", "요약", "정리"]);
 
 const KO_LANG_RO_REQUEST_RE = new RegExp(
-  `${KO_COMPLAINT_PREFIX_GUARD}(${FOREIGN_LANG_KO})${KO_RO_PARTICLE}\\s*((?:(?<=\\s)(?!${FOREIGN_LANG_KO}${KO_RO_PARTICLE}\\s)(?!왜\\s|자꾸만?\\s)[가-힣A-Za-z0-9,·/_-]{1,32}\\s+){0,4})(?:(${KO_REQUEST_NOUN_ACTION})(?:\\s*[을를만도은는])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}|${KO_REQUEST_VERB_CONJ})`,
+  `${KO_COMPLAINT_PREFIX_GUARD}(${FOREIGN_LANG_KO})${KO_RO_PARTICLE}\\s*((?:(?<=\\s)(?!${FOREIGN_LANG_KO}${KO_RO_PARTICLE}\\s)(?!왜\\s*|자꾸만?\\s*)[가-힣A-Za-z0-9,·/_-]{1,32}\\s+){0,4})(?:(${KO_REQUEST_NOUN_ACTION})(?:\\s*[을를만도은는])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}|${KO_REQUEST_VERB_CONJ})`,
   "g",
 );
 
 const KO_VERBLESS_RO_REQUEST_RE = new RegExp(
-  `${KO_COMPLAINT_PREFIX_GUARD}(?:${KO_REQUEST_NOUN_ACTION}|번역(?:본|문)|요약(?:본|문)|초안)(?:\\s*언어)?(?:[은는도만이가]|[을를]|\\s*:)\\s*((?:(?<=\\s)(?!${FOREIGN_LANG_KO}${KO_RO_PARTICLE}\\s)(?!왜\\s|자꾸만?\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2})(${FOREIGN_LANG_KO})${KO_RO_PARTICLE}(?:요?(?=$|[,;)])|\\s*${KO_REQUEST_NOUN_ENDING})`,
+  `${KO_COMPLAINT_PREFIX_GUARD}(?:${KO_REQUEST_NOUN_ACTION}|번역(?:본|문)|요약(?:본|문)|초안)(?:\\s*언어)?(?:[은는도만이가]|[을를]|\\s*:)\\s*((?:(?<=\\s)(?!${FOREIGN_LANG_KO}${KO_RO_PARTICLE}\\s)(?!왜\\s*|자꾸만?\\s*)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2})(${FOREIGN_LANG_KO})${KO_RO_PARTICLE}(?:요?(?=$|[,;)])|\\s*${KO_REQUEST_NOUN_ENDING})`,
   "g",
 );
 
