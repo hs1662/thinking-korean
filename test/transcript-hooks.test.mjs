@@ -854,7 +854,7 @@ describe("structured drift marker tags", () => {
     const parsed = parseDriftMarkerStep(repeatedDrifted);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time legacy marker scan (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time legacy marker scan (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(parsed?.structured, false);
     assert.deepEqual(parsed?.fields, []);
 

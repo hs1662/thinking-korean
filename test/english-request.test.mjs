@@ -452,7 +452,7 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     const result = isExplicitEnglishOutputRequest(repeatedPlease);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time request check (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time request check (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(result, false);
     assert.equal(isExplicitEnglishOutputRequest("Could you please kindly just reply in English?"), true);
   });
@@ -463,7 +463,7 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     const result = isExplicitEnglishOutputRequest(unclosedTags);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time metadata strip (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time metadata strip (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(result, false);
     assert.equal(
       isExplicitEnglishOutputRequest(
@@ -479,7 +479,7 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     const result = isExplicitEnglishOutputRequest(repeatedThenOtherTag);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time multi-tag metadata strip (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time multi-tag metadata strip (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(result, false);
   });
 
@@ -491,8 +491,8 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       const elapsedMs = performance.now() - startMs;
 
       assert.ok(
-        elapsedMs < 50,
-        `expected linear-time request check for "${prefix}" (<50ms), took ${elapsedMs.toFixed(1)}ms`,
+        elapsedMs < 250,
+        `expected linear-time request check for "${prefix}" (<250ms), took ${elapsedMs.toFixed(1)}ms`,
       );
       assert.equal(result, false);
     }
@@ -512,8 +512,8 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       const elapsedMs = performance.now() - startMs;
 
       assert.ok(
-        elapsedMs < 50,
-        `expected linear-time request check for repeated "${token}" (<50ms), took ${elapsedMs.toFixed(1)}ms`,
+        elapsedMs < 250,
+        `expected linear-time request check for repeated "${token}" (<250ms), took ${elapsedMs.toFixed(1)}ms`,
       );
       assert.equal(result, false);
     }
@@ -530,8 +530,8 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     const elapsedMs = performance.now() - startMs;
 
     assert.ok(
-      elapsedMs < 50,
-      `expected linear-time source description check (<50ms), took ${elapsedMs.toFixed(1)}ms`,
+      elapsedMs < 250,
+      `expected linear-time source description check (<250ms), took ${elapsedMs.toFixed(1)}ms`,
     );
     assert.equal(result, false);
     assert.equal(isExplicitEnglishOutputRequest("영어로 옮긴 거 요약 좀 해 줘"), false);

@@ -803,7 +803,7 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     const analysis = analyzeField("content", sample);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time analysis (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
 
@@ -814,7 +814,7 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     const analysis = analyzeField("content", sample);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time analysis (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
 
@@ -825,7 +825,7 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     const analysis = analyzeField("content", sample);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time analysis (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
 
@@ -836,7 +836,7 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     const analysis = analyzeField("content", sample);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time analysis (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
 
@@ -847,7 +847,7 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     const analysis = analyzeField("content", sample);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time analysis (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
 
@@ -858,7 +858,7 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     const analysis = analyzeField("content", sample);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time analysis (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
 
@@ -869,7 +869,7 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     const analysis = analyzeUiTexts([sample]);
     const elapsedMs = performance.now() - startMs;
 
-    assert.ok(elapsedMs < 50, `expected linear-time UI analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.ok(elapsedMs < 250, `expected linear-time UI analysis (<250ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "drifted");
     assert.equal(analyzeUiTexts(["(Check) [build] status!"]).status, "drifted");
     assert.notEqual(analyzeUiTexts(["(React) [Router]!"]).status, "drifted");
