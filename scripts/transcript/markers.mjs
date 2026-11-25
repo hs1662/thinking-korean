@@ -91,9 +91,10 @@ export function buildPreToolDenyMessage() {
 // Fallback for unstructured (legacy) marker bodies without a [대상:…] tag.
 function legacyInferFields(body) {
   const fields = new Set();
+  const segments = body.split(/[.\n]+/);
   if (
     /내부 추론과 (?:생각|사고) 요약이 영어로|내부 추론·(?:생각|사고) 요약/.test(body) ||
-    /\bdrifted\b[^.\n]*\bthinking\b|\bthinking\b[^.\n]*\bdrifted\b/i.test(body)
+    segments.some((segment) => /\bdrifted\b/i.test(segment) && /\bthinking\b/i.test(segment))
   ) {
     fields.add("thinking");
   }
@@ -101,7 +102,7 @@ function legacyInferFields(body) {
     body.includes("직전 최종 응답이 영어로") ||
     body.includes("최종 응답이 모두 영어로") ||
     body.includes("최종 응답도 영어로") ||
-    /\bdrifted\b[^.\n]*\bcontent\b|\bcontent\b[^.\n]*\bdrifted\b/i.test(body)
+    segments.some((segment) => /\bdrifted\b/i.test(segment) && /\bcontent\b/i.test(segment))
   ) {
     fields.add("content");
   }
