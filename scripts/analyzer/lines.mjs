@@ -33,7 +33,7 @@ const BULLET_PREFIX_RE = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/;
 const HEADING_PREFIX_RE = /^[ \t]*#{1,6}[ \t]+/;
 const CITED_BOLD_RE = /\*\*([^*\n]+)\*\*/g;
 const CITED_DOUBLE_QUOTE_RE = /"([^"\n]+)"/g;
-const CITED_CURLY_QUOTE_RE = /[“「『]([^”」』\n]+)[”」』]/g;
+const CITED_CURLY_QUOTE_RE = /[“「『]([^“「『”」』\n]+)[”」』]/g;
 const CITED_PAREN_RE = /\(([^()\n]+)\)/g;
 const KEY_VALUE_LABEL_LINE_RE = /^[ \t]*[A-Za-z][A-Za-z0-9_ -]{1,30}:[ \t]*[^\n]{1,60}$/;
 
