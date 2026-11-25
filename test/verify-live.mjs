@@ -265,7 +265,7 @@ export const CASES = [
   {
     name: "L4-readonly-frictionless",
     prompt:
-      "파일은 절대 수정하거나 생성하지 말고, src/calc.mjs와 test/calc.test.mjs를 읽은 뒤 현재 applyDiscount 함수에 어떤 버그가 있는지 한국어로 3문장 이내로 설명해 줘.",
+      "파일은 절대 수정하거나 생성하지 말고, src/calc.mjs와 test/calc.test.mjs를 읽은 뒤 현재 applyDiscount 함수의 계산 버그 원인, 경계값 처리의 한계, 그리고 부동소수점 오차 가능성을 단계별로 분석해 한국어로 설명해 줘.",
     exemptContentDrift: false,
     commitInitialWorkspace: true,
     setupWorkspace: setupSampleCalcWorkspace,
@@ -955,8 +955,13 @@ export function parseAuditJsonl(rawText) {
   return records;
 }
 
-export function readIsolatedAuditRecords({ homeDir, fallbackDataDir, pluginName = "hstack" }) {
-  const pluginDataAudit = homeDir
+export function readIsolatedAuditRecords({ appDataDir, homeDir, fallbackDataDir, pluginName = "hstack" }) {
+  const appPluginDataAudit = appDataDir
+    ? join(appDataDir, "plugin_data", pluginName, "audit.jsonl")
+    : homeDir
+      ? join(homeDir, ".gemini", "antigravity-cli", "plugin_data", pluginName, "audit.jsonl")
+      : null;
+  const legacyPluginDataAudit = homeDir
     ? join(homeDir, ".gemini", "config", "plugins", "data", pluginName, "audit.jsonl")
     : null;
   const fallbackAudit = fallbackDataDir ? join(fallbackDataDir, "audit.jsonl") : null;
@@ -964,7 +969,8 @@ export function readIsolatedAuditRecords({ homeDir, fallbackDataDir, pluginName 
   const sources = [];
   const seenPaths = new Set();
   for (const [kind, candidate] of [
-    ["plugin_data", pluginDataAudit],
+    ["plugin_data", appPluginDataAudit],
+    ["plugin_data", legacyPluginDataAudit],
     ["fallback", fallbackAudit],
   ]) {
     if (!candidate || !existsSync(candidate)) {
@@ -1274,6 +1280,7 @@ function runLiveCase(model, testCase, options, pluginManifest) {
     const cliLogText = existsSync(cliLogPath) ? readFileSync(cliLogPath, "utf8") : "";
     const hookcallerPanics = countHookcallerPanics(cliLogText);
     const { records: auditRecords, auditPathUsed } = readIsolatedAuditRecords({
+      appDataDir,
       homeDir,
       fallbackDataDir,
       pluginName,

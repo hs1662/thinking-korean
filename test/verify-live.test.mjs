@@ -443,14 +443,15 @@ describe("verify-live governance cases L1-L4, audit parsing, and panic detection
     assert.equal(fallbackOnly.auditPathUsed, "fallback");
     assert.equal(fallbackOnly.records.length, 1);
 
-    const pluginDataDir = join(homeDir, ".gemini", "config", "plugins", "data", "hstack");
+    const appDataDir = join(homeDir, ".gemini", "antigravity-cli");
+    const pluginDataDir = join(appDataDir, "plugin_data", "hstack");
     mkdirSync(pluginDataDir, { recursive: true });
     writeFileSync(
       join(pluginDataDir, "audit.jsonl"),
       `${JSON.stringify({ event: "gate_verify", verdict: "PASS", blockedRules: [], warnedRules: [], attemptInTurn: 1 })}\n`,
       "utf8",
     );
-    const withPluginData = readIsolatedAuditRecords({ homeDir, fallbackDataDir: fallbackDir, pluginName: "hstack" });
+    const withPluginData = readIsolatedAuditRecords({ appDataDir, homeDir, fallbackDataDir: fallbackDir, pluginName: "hstack" });
     assert.equal(withPluginData.auditPathUsed, "plugin_data");
     assert.equal(withPluginData.records.length, 2);
   });
