@@ -44,7 +44,7 @@ const KO_SOURCE_OBJECT_RE =
 const KO_CONSUME_ACTIONS = new Set(["설명", "요약", "정리"]);
 
 const KO_LANG_RO_REQUEST_RE = new RegExp(
-  `${FOREIGN_LANG_KO}(?:으로|로)\\s*((?:(?!${FOREIGN_LANG_KO}(?:으로|로)\\s)[가-힣A-Za-z0-9,·-]+\\s+){0,4})(?:(${KO_REQUEST_NOUN_ACTION})${KO_REQUEST_NOUN_ENDING}|${KO_REQUEST_VERB_CONJ})`,
+  `${FOREIGN_LANG_KO}(?:으로|로)\\s*((?:(?!${FOREIGN_LANG_KO}(?:으로|로)\\s)[가-힣A-Za-z0-9,·-]+\\s+){0,4})(?:(${KO_REQUEST_NOUN_ACTION})(?:\\s*[을를])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}|${KO_REQUEST_VERB_CONJ})`,
   "g",
 );
 
@@ -116,7 +116,15 @@ function isSourceDescription(intermediate, action) {
   if (!KO_SOURCE_MODIFIER_RE.test(intermediate)) {
     return false;
   }
-  return KO_SOURCE_OBJECT_RE.test(intermediate) || KO_CONSUME_ACTIONS.has(action);
+  const resolvedAction =
+    action ||
+    (intermediate
+      .replace(/(?:\s*좀)?$/, "")
+      .trim()
+      .split(/\s+/)
+      .pop() ?? ""
+    ).replace(/[을를]$/, "");
+  return KO_SOURCE_OBJECT_RE.test(intermediate) || KO_CONSUME_ACTIONS.has(resolvedAction);
 }
 
 function hasValidKoreanEnglishRequest(sentence) {
