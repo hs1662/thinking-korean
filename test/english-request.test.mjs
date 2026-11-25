@@ -445,4 +445,15 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "continue",
     );
   });
+
+  it("scans repeated polite request prefixes in linear time without quadratic EN_POLITE_REQUEST_RE backtracking", () => {
+    const repeatedPlease = `${"please ".repeat(20_000)}확인해 줘`;
+    const startMs = performance.now();
+    const result = isExplicitEnglishOutputRequest(repeatedPlease);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time request check (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.equal(result, false);
+    assert.equal(isExplicitEnglishOutputRequest("Could you please kindly just reply in English?"), true);
+  });
 });
