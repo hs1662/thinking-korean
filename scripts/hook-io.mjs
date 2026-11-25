@@ -5,7 +5,7 @@ import {
   KEPT_STEP_TYPES,
   PRE_TOOL_DENIAL_NEEDLE,
   isPreToolDenialStep,
-  parseTranscriptJsonl,
+  parseTranscriptJsonlWithStats,
   parseTranscriptLine,
 } from "./transcript.mjs";
 
@@ -265,7 +265,8 @@ function readTranscript(transcriptPath, readTextFile) {
         if (typeof content !== "string" || content.trim().length === 0) {
           continue;
         }
-        result = { hasContent: true, steps: parseTranscriptJsonl(content) };
+        const parsed = parseTranscriptJsonlWithStats(content);
+        result = { hasContent: parsed.validRecordCount > 0, steps: parsed.steps };
       } else {
         result = readTranscriptStepsFast(candidatePath);
       }

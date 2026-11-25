@@ -17,7 +17,7 @@ import {
   measureLanguage,
 } from "./lexicon.mjs";
 import { buildAnalyzedLines, isShortEnglishProseMetrics, proseLinesOf, sumProseMetrics } from "./lines.mjs";
-import { extractNaturalText } from "./stripper.mjs";
+import { extractNaturalText, stripSummarizerBoilerplate } from "./stripper.mjs";
 
 const HARD_RUN_SPLIT_RE = /[|;:·•→←↔⇒]+/;
 const LIST_ITEM_SPLIT_RE = /(?:,|[ \t]+(?:\/|\+|&)[ \t]+)/;
@@ -126,7 +126,8 @@ export function analyzeField(field, rawText, options = {}) {
   } = options;
 
   const normalizedRaw = typeof rawText === "string" ? rawText : "";
-  const naturalText = extractNaturalText(normalizedRaw);
+  const preparedRaw = field === "thinking" ? stripSummarizerBoilerplate(normalizedRaw) : normalizedRaw;
+  const naturalText = extractNaturalText(preparedRaw);
   const metrics = measureLanguage(naturalText);
   const base = { field, rawLength: normalizedRaw.length, ...metrics };
   const lines = buildAnalyzedLines(naturalText);

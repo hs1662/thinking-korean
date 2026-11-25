@@ -4,6 +4,8 @@ import { HAS_HANGUL_RE, PROSE_OPENER_RE, englishWords, hasEnglishProseFunctionWo
 
 const CLI_UI_HINT_LINE_RE =
   /^[ \t]*(?:[-*][ \t]+)?(?:Run|Use|Type)\s+`?\/[a-z][a-z0-9_-]*(?:[ \t]+[a-z0-9_-]+){0,3}`?[ \t]*\([^)\n]{1,40}\)[ \t]*(?:to[ \t]+[^\n]{1,60})?$/gim;
+// Exact single-line boilerplate emitted by the server-side thought summarizer (never model-authored prose).
+const SUMMARIZER_BOILERPLATE_LINE_RE = /^[ \t]*I['’]m thinking through how to approach this\.[ \t]*$/gm;
 const ERROR_QUOTE_RE =
   /^(?:[A-Z][A-Za-z0-9_]*Error:|Error:|Exception:|Traceback\b|FAIL(?:ED)?\b|FATAL\b|WARN(?:ING)?\b|ERR!|ENOENT\b|EACCES\b|EPERM\b|ECONNREFUSED\b|ETIMEDOUT\b|EISDIR\b|ENOTDIR\b|SyntaxError\b|TypeError\b|ReferenceError\b|RangeError\b|AssertionError\b|Unexpected\s+(?:end|token|identifier|EOF|character)|Cannot\s+(?:read|find|resolve|open|access)\b|(?:Failed\s+to|Could\s+not|Unable\s+to)\s+(?:open|read|write|load|parse|resolve|find|locate|connect|fetch|download|upload|compile|build|start|spawn|exec(?:ute)?|run|bind|listen|create|delete|remove|rename|stat|access|import|require|install|authenticate|verify|validate|initialize|allocate|lock|unlock|mount|unlink|mkdir|chmod|chown|decode|encode|serialize|deserialize|send|receive|request|sync|checkout|push|pull|clone|merge)\b|Permission\s+denied\b|No\s+such\s+file\b|at\s+\S+\s*\([^)\n]+\))/;
 const DOUBLE_QUOTED_RE = /"((?:\\.|[^"\\\n])*)"/g;
@@ -223,6 +225,13 @@ export function stripTechnicalAcronyms(text) {
 
 export function stripPathsFlagsAndIdentifiers(text) {
   return TECHNICAL_TOKEN_RES.reduce((acc, regex) => acc.replace(regex, " "), text);
+}
+
+export function stripSummarizerBoilerplate(rawText) {
+  if (typeof rawText !== "string" || rawText.length === 0) {
+    return "";
+  }
+  return rawText.replace(/\r\n?/g, "\n").replace(SUMMARIZER_BOILERPLATE_LINE_RE, "");
 }
 
 export function extractNaturalText(rawText) {

@@ -10,9 +10,9 @@ export function handlePreToolUse(stdinText, readTextFile) {
     return { decision: "allow" };
   }
 
-  // Without readable transcript steps the per-turn retry cap cannot be enforced, so fail open.
-  const options = context.steps.length === 0 ? { transcriptAvailable: false } : {};
-  const decision = decidePreToolUseAction(toolCall, context.steps, options);
+  const decision = decidePreToolUseAction(toolCall, context.steps, {
+    transcriptAvailable: context.transcriptAvailable,
+  });
   if (decision.action !== "deny") {
     return { decision: "allow" };
   }

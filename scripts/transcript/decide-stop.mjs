@@ -61,7 +61,7 @@ export function decideStopAction(steps, options = {}) {
     const parsedMarker = parseDriftMarkerStep(step);
     if (parsedMarker && markerCoversContent(parsedMarker)) {
       lastContentMarkerIndex = i;
-      if (parsedMarker.sourceHook === "Stop" || getToolCalls(latestPlannerStep).length === 0) {
+      if (parsedMarker.sourceHook === "Stop" || (latestPlannerStep !== null && getToolCalls(latestPlannerStep).length === 0)) {
         sawStopRetryTriggerInTurn = true;
       }
       continue;

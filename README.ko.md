@@ -26,9 +26,9 @@ agy plugin enable thinking-korean
 
 플러그인은 상시 규칙 파일 하나와 세 개의 라이프사이클 훅(`PreToolUse`, `PostInvocation`, `Stop`)으로 동작합니다.
 
-- `rules/AGENTS.md`는 `<user_rules>`에 로드되는 한국어 전용 규칙 파일입니다. 내부 추론, 생각 요약, 최종 응답은 물론 사용자 화면에 표시되는 작업 단계 체크리스트(할 일 목록 제목), 도구 실행 요약, 서브에이전트 역할 이름, 질문·선택지, 아티팩트 요약까지 자연스러운 한국어 문장으로 작성하게 합니다. 모든 추론 문단의 첫 문장에 한국어 요약 고정 선언을 넣고 6에서 8문단 이내(문단당 3에서 4문장)로 간결하게 정리하게 해 서버 측 사고 요약기가 청크 단위로 영어로 넘어가는 현상을 막습니다. 파일 이름, 경로, 코드 식별자, 명령어, 고유명사, 한국어 기술 대화에서 자연스럽게 쓰는 영어 단어와 용어는 억지로 음차하지 않고 문장 안에 그대로 허용하며 영어 문장, 영어 절, 영어 문단 이탈만 금지합니다.
+- `rules/AGENTS.md`는 `<user_rules>`에 로드되는 한국어 전용 규칙 파일입니다. 내부 추론, 생각 요약, 최종 응답은 물론 사용자 화면에 표시되는 작업 단계 체크리스트(할 일 목록 제목), 도구 실행 요약, 서브에이전트 역할 이름, 질문·선택지, 아티팩트 요약까지 자연스러운 한국어 문장으로 작성하게 합니다. 모든 추론 문단의 첫 문장에 한국어 요약 고정 선언을 넣고 4에서 6문단 이내(문단당 2에서 3문장)로 압축하며, 코드 조각·긴 번호 목록·과도한 영문 식별자 나열을 피하고 짧은 확인 단계에도 구체적인 한국어 문장을 쓰게 해 서버 측 사고 요약기가 영어로 전환되거나 기본 영어 문구로 대체되는 현상을 막습니다. 파일 이름, 경로, 코드 식별자, 명령어, 고유명사, 한국어 기술 대화에서 자연스럽게 쓰는 영어 단어와 용어는 억지로 음차하지 않고 문장 안에 그대로 허용하며 영어 문장, 영어 절, 영어 문단 이탈만 금지합니다.
 - `hooks.json`의 `PreToolUse`는 순수 사용자 표시 도구(`update_steps`, `ask_question`, `todo_write`, `task_create`, `task_update`, `update_plan`) 실행 직전에 `scripts/pre-tool-use.mjs`를 실행합니다. 작업 단계 제목이나 선택지가 영어로 이탈하면 화면에 렌더링되기 전에 `decision: "deny"`와 한국어 교정 사유를 반환하며, 턴당 1회 무상태 재시도 상한으로 무한 차단을 막습니다.
-- `hooks.json`의 `PostInvocation`은 모델 호출과 도구 실행이 끝난 뒤 `scripts/post-invocation.mjs`를 실행해 `transcript_full.jsonl`의 최신 `PLANNER_RESPONSE`(`thinking`, `content`, `tool_calls` 화면 표시 텍스트)를 검사합니다. 분석기(`scripts/analyzer.mjs`)는 한국어 문장 안에 자연스럽게 섞인 1에서 3단어 비산문 영어 기술 용어와 코드, 경로, 식별자는 오탐하지 않고 영어 문장, 축약형 절, 4단어 이상 연속 영어 구절, 영어 문단, 영어 화면 표시 제목 이탈만 감지합니다. 영어 이탈이 감지되면 한국어 `[한국어사고:영어이탈]` `systemMessage`를 비차단으로 주입하며, 무상태 복구 인식 백오프를 적용합니다.
+- `hooks.json`의 `PostInvocation`은 모델 호출과 도구 실행이 끝난 뒤 `scripts/post-invocation.mjs`를 실행해 `transcript_full.jsonl`의 최신 `PLANNER_RESPONSE`(`thinking`, `content`, `tool_calls` 화면 표시 텍스트)를 검사합니다. 분석기(`scripts/analyzer.mjs`)는 한국어 문장 안에 자연스럽게 섞인 1에서 3단어 비산문 영어 기술 용어와 코드, 경로, 식별자, 그리고 `thinking`에 서버 사고 요약기가 삽입하는 고정 영문 1줄 폴백 문구는 오탐하지 않고 영어 문장, 축약형 절, 4단어 이상 연속 영어 구절, 영어 문단, 영어 화면 표시 제목 이탈만 감지합니다. 영어 이탈이 감지되면 한국어 `[한국어사고:영어이탈]` `systemMessage`를 비차단으로 주입하며, 무상태 복구 인식 백오프를 적용합니다.
   - 한국어로 복구되면 실패 횟수와 쿨다운을 즉시 초기화합니다.
   - `thinking` 단독 또는 `ui` 단독 이탈이 계속되면 백오프 후 연속 미복구 상한(`2`회)에 도달할 때 추가 주입을 중단해 컨텍스트 오염을 막고, 실제 한국어 출력이 다시 나오면 상한을 해제합니다.
   - 사용자 응답(`content`) 이탈은 독립 예산을 유지하며, `USER_INPUT`에 명시적인 영어 번역·작성 요청이 있으면 `thinking`과 작업 단계 체크리스트 검사는 유지하되 `content`만 면제합니다.
@@ -52,7 +52,7 @@ agy plugin enable thinking-korean
 
 플러그인은 이미 스트리밍된 토큰을 다시 쓰거나 모델 제공자의 사고 언어 파라미터를 설정할 수 없으므로, 훅 복구는 다음 모델 호출부터 적용됩니다. 격리된 환경에서 실제 모델을 측정한 결과는 다음과 같습니다.
 
-- `gemini-4-neon-xhigh`는 현재 코드 기준 격리 검증 5개 전 케이스(`korean-reasoning`, `tool-code-analysis`, `heavy-english-skill-tools`, `explicit-translation`, `todo-checklist`)를 모두 통과했습니다. `driftInjections: 0`, `preToolDenials: 0`이었고 모든 케이스에서 가중 사고 한글비가 `100.0%`였습니다. `explicit-translation`은 `contentExemptionPassed: true`였고, `todo-checklist`에서는 `update_steps`가 실제로 실행됐습니다(`requiredToolsExecuted: { update_steps: true }`). 실행 명령은 `node test/verify-live.mjs --models gemini-4-neon-xhigh --cases korean-reasoning,tool-code-analysis,heavy-english-skill-tools,explicit-translation,todo-checklist --timeout 180`입니다.
+- `gemini-4-neon-xhigh`는 현재 코드 기준 격리 검증 5개 전 케이스(`korean-reasoning`, `tool-code-analysis`, `heavy-english-skill-tools`, `explicit-translation`, `todo-checklist`)를 모두 통과했습니다. `driftInjections: 0`, `preToolDenials: 0`이었고 가중 사고 한글비는 `93.65%`에서 `100.0%`였습니다. `explicit-translation`은 `contentExemptionPassed: true`였고, `todo-checklist`에서는 `update_steps`가 실제로 실행됐습니다(`requiredToolsExecuted: { update_steps: true }`). 실행 명령은 `node test/verify-live.mjs --models gemini-4-neon-xhigh --cases korean-reasoning,tool-code-analysis,heavy-english-skill-tools,explicit-translation,todo-checklist --timeout 180`입니다.
 
 아래 결과는 이전 코드 버전에서 4개 케이스(`todo-checklist` 제외)로 측정한 이전 실측 기준이며, 현재 코드로는 다시 측정하지 않았습니다.
 

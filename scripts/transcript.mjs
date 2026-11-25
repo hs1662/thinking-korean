@@ -5,6 +5,7 @@ export {
   getToolCalls,
   isPreToolDenialStep,
   parseTranscriptJsonl,
+  parseTranscriptJsonlWithStats,
   parseTranscriptLine,
 } from "./transcript/steps.mjs";
 export { isExplicitEnglishOutputRequest } from "./transcript/english-request.mjs";

@@ -79,7 +79,7 @@ export function deniedToolCallIndexes(steps, plannerPos) {
   return denied;
 }
 
-export function parseTranscriptLine(line, fallbackStepIndex = 0) {
+function parseRawRecord(line) {
   if (typeof line !== "string") {
     return null;
   }
@@ -98,9 +98,15 @@ export function parseTranscriptLine(line, fallbackStepIndex = 0) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || typeof parsed.type !== "string") {
     return null;
   }
+  return parsed;
+}
 
-  // GENERIC steps are kept only when they record a PreToolUse denial, which acts as a "ui" drift marker.
-  if (!KEPT_STEP_TYPES.has(parsed.type) && !isPreToolDenialStep(parsed)) {
+function isTrackedTranscriptRecord(parsed) {
+  return KEPT_STEP_TYPES.has(parsed.type) || isPreToolDenialStep(parsed);
+}
+
+function recordToStep(parsed, fallbackStepIndex) {
+  if (!isTrackedTranscriptRecord(parsed)) {
     return null;
   }
 
@@ -116,17 +122,32 @@ export function parseTranscriptLine(line, fallbackStepIndex = 0) {
   };
 }
 
-export function parseTranscriptJsonl(rawText) {
+export function parseTranscriptLine(line, fallbackStepIndex = 0) {
+  const parsed = parseRawRecord(line);
+  return parsed ? recordToStep(parsed, fallbackStepIndex) : null;
+}
+
+export function parseTranscriptJsonlWithStats(rawText) {
   if (typeof rawText !== "string" || rawText.length === 0) {
-    return [];
+    return { steps: [], validRecordCount: 0 };
   }
 
   const steps = [];
+  let validRecordCount = 0;
   for (const line of rawText.split(/\r?\n/)) {
-    const step = parseTranscriptLine(line, steps.length);
+    const parsed = parseRawRecord(line);
+    if (!parsed) {
+      continue;
+    }
+    const step = recordToStep(parsed, validRecordCount);
+    validRecordCount += 1;
     if (step) {
       steps.push(step);
     }
   }
-  return steps;
+  return { steps, validRecordCount };
+}
+
+export function parseTranscriptJsonl(rawText) {
+  return parseTranscriptJsonlWithStats(rawText).steps;
 }

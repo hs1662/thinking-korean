@@ -36,6 +36,10 @@ const CITED_CURLY_QUOTE_RE = /[“「『]([^”」』\n]+)[”」』]/g;
 const CITED_PAREN_RE = /\(([^()\n]+)\)/g;
 const KEY_VALUE_LABEL_LINE_RE = /^[ \t]*[A-Za-z][A-Za-z0-9_ -]{1,30}:[ \t]*[^\n]{1,60}$/;
 
+function countEnglishFunctionWords(words) {
+  return words.filter((word) => ENGLISH_CONTRACTION_RE.test(word) || hasWordFlag(word.toLowerCase(), FUNCTION)).length;
+}
+
 function isShortCitedTitle(rawInner) {
   const inner = rawInner.trim();
   if (inner.length === 0 || inner.length > MAX_CITED_TITLE_CHARS || HAS_HANGUL_RE.test(inner)) {
@@ -51,13 +55,8 @@ function isShortCitedTitle(rawInner) {
   if (words.length >= 5 && hasEnglishSentenceFiniteWord(words)) {
     return false;
   }
-  if (words.length >= 6) {
-    const functionWordCount = words.filter(
-      (word) => ENGLISH_CONTRACTION_RE.test(word) || hasWordFlag(word.toLowerCase(), FUNCTION),
-    ).length;
-    if (functionWordCount >= 2) {
-      return false;
-    }
+  if (words.length >= 6 && countEnglishFunctionWords(words) >= 2) {
+    return false;
   }
   return true;
 }
@@ -156,11 +155,17 @@ function isStructuredHeading(trimmed) {
   }
   const body = trimmed.replace(HEADING_PREFIX_RE, "").trim();
   const words = englishWords(body);
-  return (
-    !SENTENCE_BOUNDARY_RE.test(body) &&
-    !PROSE_OPENER_RE.test(body) &&
-    !(words.length >= 5 && hasEnglishSentenceFiniteWord(words))
-  );
+  if (
+    SENTENCE_BOUNDARY_RE.test(body) ||
+    PROSE_OPENER_RE.test(body) ||
+    (words.length >= 5 && hasEnglishSentenceFiniteWord(words))
+  ) {
+    return false;
+  }
+  if (words.length >= 6 && countEnglishFunctionWords(words) >= 3) {
+    return false;
+  }
+  return true;
 }
 
 function isKeyValueLabel(trimmed) {

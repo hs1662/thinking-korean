@@ -21,8 +21,7 @@ import {
 } from "./lexicon.mjs";
 import { extractNaturalText } from "./stripper.mjs";
 
-// "탭: ", "1단계: ", "단계 2 - " ... a short Korean label in front of the actual text.
-const KOREAN_LABEL_PREFIX_RE = /^\s*(?:\d+\s*)?[가-힣]{1,6}(?:\s*\d+)?\s*[:：\-–]\s*/;
+const KOREAN_LABEL_PREFIX_RE = /^\s*(?:\d+\s*)?[가-힣]{1,6}(?:\s+[가-힣]{1,4})?(?:\s*\d+)?\s*[:：\-–]\s*/;
 const TOKEN_EDGE_PUNCT_RE = /^[("'“‘[{<]+|[)"'”’\]}>,.;:!?]+$/g;
 const VERSION_TOKEN_RE = /^v?\d+(?:\.(?:\d+|[xX*]))*\+?$/; // 18, 5.x, v1.2.3
 const ACRONYM_TOKEN_RE = /^[A-Z][A-Z0-9]+s?$/; // CSS, LTS, APIs, S3
