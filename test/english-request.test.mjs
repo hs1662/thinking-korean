@@ -537,4 +537,37 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(isExplicitEnglishOutputRequest("영어로 옮긴 거 요약 좀 해 줘"), false);
     assert.equal(isExplicitEnglishOutputRequest("영어로 옮긴 거 요약을 좀 해 줘"), false);
   });
+
+  it("handles dotted filenames and versions, CJK foreign languages, clause-scoped negation, and Korean reasoning clauses", () => {
+    for (const prompt of [
+      "영어로 README.md 요약해 줘",
+      "영어로 package.json 설명해 줘",
+      "영어로 v1.1.0 릴리즈 노트 작성해 줘",
+      "Translate README.md into English",
+      "Please summarize README.md in English",
+      "Translate v1.1.0 release notes to English",
+      "Translate scripts/analyzer.mjs comments into English",
+      "일본어로 번역해 줘",
+      "중국어로 번역해 줘",
+      "Can you translate this to Japanese?",
+      "Please reply in Chinese",
+      "영어로 번역하지 말고 프랑스어로 번역해 줘",
+      "Don't reply in English, reply in Spanish",
+      "이 문장을 영어로 번역하고, 추론은 한국어로 해 줘",
+      "Translate this into English, and keep your reasoning in Korean",
+      "<USER_REQUEST>\n영어로요\n</USER_REQUEST>\n<FILE_CONTEXT>extra</FILE_CONTEXT>",
+    ]) {
+      assert.equal(isExplicitEnglishOutputRequest(prompt), true, `expected exempt for: ${prompt}`);
+    }
+
+    for (const prompt of [
+      "영어로 된 README.md를 한국어로 번역해 줘",
+      "영어로 된 v1.1.0 릴리즈 노트를 요약해 줘",
+      "영어로 번역하지 말고 한국어로 번역해 줘",
+      "Don't reply in English, reply in Korean",
+      "영어로 번역하고 한국어로 자연스럽게 요약해 줘",
+    ]) {
+      assert.equal(isExplicitEnglishOutputRequest(prompt), false, `expected Korean for: ${prompt}`);
+    }
+  });
 });
