@@ -493,4 +493,23 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(isExplicitEnglishOutputRequest("영어로 번역: 오늘 회의는 취소되었습니다."), true);
     assert.equal(isExplicitEnglishOutputRequest("영작: 오늘 회의는 취소되었습니다."), true);
   });
+
+  it("scans repeated Korean language-particle tokens in linear time without quadratic backtracking", () => {
+    for (const token of ["영어로", "한국어로"]) {
+      const repeated = token.repeat(14_000);
+      const startMs = performance.now();
+      const result = isExplicitEnglishOutputRequest(repeated);
+      const elapsedMs = performance.now() - startMs;
+
+      assert.ok(
+        elapsedMs < 50,
+        `expected linear-time request check for repeated "${token}" (<50ms), took ${elapsedMs.toFixed(1)}ms`,
+      );
+      assert.equal(result, false);
+    }
+
+    assert.equal(isExplicitEnglishOutputRequest("영어로 자연스럽게 번역해 줘"), true);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 자연스럽게 번역하지 마"), false);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 번역하고 한국어로 자연스럽게 요약해 줘"), false);
+  });
 });
