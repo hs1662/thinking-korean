@@ -12,7 +12,7 @@
         ]
       },
       {
-        "matcher": "^mcp_hstack_.*$",
+        "matcher": "^(mcp_hstack_.*|invoke_subagent)$",
         "hooks": [
           {
             "type": "command",

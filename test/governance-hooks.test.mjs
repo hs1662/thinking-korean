@@ -132,7 +132,7 @@ describe("hooks.json PreToolUse matcher contract", () => {
 
     assert.equal(uiEntries.length, 1);
     assert.equal(gateEntries.length, 1);
-    assert.equal(gateEntries[0].matcher, "^mcp_hstack_.*$");
+    assert.equal(gateEntries[0].matcher, "^(mcp_hstack_.*|invoke_subagent)$");
     assert.equal(gateEntries[0].hooks[0].type, "command");
     assert.equal(gateEntries[0].hooks[0].command, "node ./scripts/pre-tool-gate.mjs");
   });

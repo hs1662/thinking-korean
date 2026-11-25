@@ -1,6 +1,14 @@
-import { ALLOWED_SCHEMA_REGISTERS, PASSING_VERDICTS, REGISTER_COPY } from "./constants.mjs";
+import {
+  ALLOWED_AUDIT_ESCALATION_MODES,
+  ALLOWED_SCHEMA_REGISTERS,
+  PASSING_VERDICTS,
+  POLLUTION_WARNING_LINE,
+  REGISTER_COPY,
+  RISK_REASON_LABELS,
+} from "./constants.mjs";
 import { classifyCommand, normalizeWorkspacePath, splitShellSegments } from "./fact-ledger.mjs";
 import { detectHedges } from "./hedge-detector.mjs";
+import { classifyRisk } from "./risk-classifier.mjs";
 
 const BARE_RUNTIME_LAUNCHERS = new Set([
   "node",
@@ -169,10 +177,39 @@ function buildRuleLine(rule, details, copy) {
   if (rule === "R5_FABRICATED_COMMAND") return builder(details.fabricatedCommands);
   if (rule === "R6_PHANTOM_MODIFIED") return builder(details.phantomModified);
   if (rule === "R7_HEDGE_DETECTED") return builder(details.hedgeHits);
+  if (rule === "R8_AUDIT_REJECTED") return builder();
+  if (rule === "R8_AUDIT_ERROR") return builder();
   return "";
 }
 
-export function formatGateReceipt({ verdict, blockedRules = [], warnedRules = [], details = {}, register = "neutral" }) {
+function formatRiskSummaryLine(risk) {
+  if (!risk || risk.tier !== "TIER_1") {
+    return "";
+  }
+  const labels = (risk.reasons ?? []).map((r) => RISK_REASON_LABELS[r] ?? r);
+  const parts = [];
+  if (labels.length > 0) {
+    parts.push(`고위험 사유: ${labels.join(", ")}`);
+  }
+  if (Array.isArray(risk.matchedSensitiveFiles) && risk.matchedSensitiveFiles.length > 0) {
+    parts.push(`민감 파일: ${risk.matchedSensitiveFiles.map((f) => `\`${f}\``).join(", ")}`);
+  }
+  if (Number.isFinite(risk.changedLines) && risk.changedLines > 0) {
+    parts.push(`변경 줄 수: ${risk.changedLines}줄`);
+  }
+  return parts.length > 0 ? `- ${parts.join(" / ")}` : "";
+}
+
+export function formatGateReceipt({
+  verdict,
+  blockedRules = [],
+  warnedRules = [],
+  details = {},
+  register = "neutral",
+  risk = null,
+  auditPassed = false,
+  pollutionAlert = false,
+}) {
   const copy = resolveCopy(register);
   const header = copy.headers[verdict] ?? copy.headers.REJECT;
   const lines = [header, copy.summaries[verdict] ?? copy.summaries.REJECT];
@@ -183,6 +220,15 @@ export function formatGateReceipt({ verdict, blockedRules = [], warnedRules = []
       const msg = buildRuleLine(rule, details, copy);
       if (msg) lines.push(`- ${msg}`);
     }
+  } else if (verdict === "PASS_WITH_AUDIT_DEGRADATION") {
+    const notice =
+      details.auditDegradationReason === "error" ? copy.auditDegradedErrorNotice : copy.auditDegradedRejectNotice;
+    lines.push(`- ${notice}`);
+  } else if (verdict === "ESCALATE_AUDIT_REQUIRED") {
+    const riskLine = formatRiskSummaryLine(risk);
+    if (riskLine) {
+      lines.push(riskLine);
+    }
   } else {
     for (const rule of blockedRules) {
       const msg = buildRuleLine(rule, details, copy);
@@ -190,9 +236,17 @@ export function formatGateReceipt({ verdict, blockedRules = [], warnedRules = []
     }
   }
 
+  if (auditPassed && (verdict === "PASS" || verdict === "PASS_WITH_WARNING")) {
+    lines.push(copy.auditPassedLine);
+  }
+
   for (const rule of warnedRules) {
     const msg = buildRuleLine(rule, details, copy);
     if (msg) lines.push(`- 주의: ${msg}`);
+  }
+
+  if (pollutionAlert) {
+    lines.push(POLLUTION_WARNING_LINE);
   }
 
   return lines.join("\n");
@@ -277,32 +331,54 @@ export function decideGate(input = {}, context = {}) {
     hedgeHits: 0,
     hedgeMatches: [],
     degradedFromBlockedRules: [],
+    auditDegradationReason: null,
   };
 
   const rawUnverifiedScope = normalizeStringList(input.unverified_scope);
   const effectiveUnverifiedScope = rawUnverifiedScope.filter((entry) => !isFillerUnverifiedEntry(entry));
   const fillerUnverifiedCount = rawUnverifiedScope.length - effectiveUnverifiedScope.length;
+  const pollutionAlert = context.pollutionAlert === true;
+  const auditEscalation = ALLOWED_AUDIT_ESCALATION_MODES.has(context.auditEscalation)
+    ? context.auditEscalation
+    : "auto";
+  const emptyRisk = { tier: "TIER_0", reasons: [], matchedSensitiveFiles: [], changedLines: 0 };
 
   if (context.sessionMissing) {
     const verdict = "SKIPPED_NO_SESSION";
-    const receiptText = formatGateReceipt({ verdict, blockedRules: [], warnedRules: [], details, register });
+    const receiptText = formatGateReceipt({
+      verdict,
+      blockedRules: [],
+      warnedRules: [],
+      details,
+      register,
+      risk: emptyRisk,
+      pollutionAlert,
+    });
     return {
       verdict,
       passed: PASSING_VERDICTS.has(verdict),
       blockedRules: [],
       warnedRules: [],
       details,
+      risk: emptyRisk,
+      auditVerdict: null,
       receiptText,
       metrics: {
         hedgeHits: 0,
         priorRejects: 0,
         unverifiedScopeCount: effectiveUnverifiedScope.length,
         fillerUnverifiedCount,
+        riskTier: emptyRisk.tier,
+        changedLines: 0,
+        auditRejectCount: 0,
+        auditErrorCount: 0,
+        pollutionAlert,
       },
     };
   }
 
   const ledger = context.ledger ?? {
+    sessionRole: "main",
     sessionReadFiles: new Set(),
     turnWrittenFiles: new Set(),
     turnCodeWrittenFiles: new Set(),
@@ -310,6 +386,7 @@ export function decideGate(input = {}, context = {}) {
     lastCodeWriteStepIndex: -1,
     turnExecutions: [],
     turnGateAttempts: [],
+    turnSubagentAudits: [],
   };
 
   const reportedModified = normalizePathList(input.modified_files, cwd, gitRoot);
@@ -447,18 +524,69 @@ export function decideGate(input = {}, context = {}) {
   const priorRejects = ledger.turnGateAttempts.filter((attempt) => attempt.verdict === "REJECT").length;
   const claimsAnyPass = verificationRuns.some((run) => run.outcome === "pass");
 
+  const risk =
+    context.risk ??
+    classifyRisk({
+      turnCodeWrittenFiles: ledger.turnCodeWrittenFiles,
+      gitLedger,
+      config: context.governanceConfig ?? null,
+    });
+  const sessionRole = typeof ledger.sessionRole === "string" && ledger.sessionRole.length > 0 ? ledger.sessionRole : "main";
+  const allTurnAudits = Array.isArray(ledger.turnSubagentAudits) ? ledger.turnSubagentAudits : [];
+  const totalAuditRejects = allTurnAudits.filter((audit) => audit.verdict === "REJECT").length;
+  const postWriteAudits = hasCodeWrite
+    ? allTurnAudits.filter((audit) => audit.stepIndex > ledger.lastCodeWriteStepIndex)
+    : allTurnAudits;
+  const latestPostWriteAudit = postWriteAudits.length > 0 ? postWriteAudits[postWriteAudits.length - 1] : null;
+  let consecutiveTrailingAuditErrors = 0;
+  for (let i = postWriteAudits.length - 1; i >= 0; i -= 1) {
+    const v = postWriteAudits[i].verdict;
+    if (v === "ERROR" || v === "MISSING_VERDICT") {
+      consecutiveTrailingAuditErrors += 1;
+    } else {
+      break;
+    }
+  }
+
   let verdict;
   let finalBlockedRules = blockedRules;
+  let auditPassed = false;
+  let auditVerdict = latestPostWriteAudit?.verdict ?? null;
+
   if (blockedRules.length > 0 && priorRejects >= 3 && effectiveUnverifiedScope.length >= 1 && !claimsAnyPass) {
     verdict = "PASS_WITH_DEGRADATION";
     details.degradedFromBlockedRules = [...blockedRules];
     finalBlockedRules = [];
   } else if (blockedRules.length > 0) {
     verdict = "REJECT";
-  } else if (warnedRules.length > 0) {
-    verdict = "PASS_WITH_WARNING";
   } else {
-    verdict = "PASS";
+    const needsIndependentAudit =
+      hasCodeWrite && auditEscalation === "auto" && risk.tier === "TIER_1" && sessionRole === "main";
+
+    if (needsIndependentAudit) {
+      if (latestPostWriteAudit && latestPostWriteAudit.verdict === "PASS") {
+        auditPassed = true;
+        verdict = warnedRules.length > 0 ? "PASS_WITH_WARNING" : "PASS";
+      } else if (totalAuditRejects >= 2 && effectiveUnverifiedScope.length >= 1) {
+        verdict = "PASS_WITH_AUDIT_DEGRADATION";
+        details.auditDegradationReason = "reject";
+      } else if (!latestPostWriteAudit) {
+        verdict = "ESCALATE_AUDIT_REQUIRED";
+      } else if (latestPostWriteAudit.verdict === "REJECT") {
+        finalBlockedRules = ["R8_AUDIT_REJECTED"];
+        verdict = "REJECT";
+      } else if (consecutiveTrailingAuditErrors >= 2 && effectiveUnverifiedScope.length >= 1) {
+        verdict = "PASS_WITH_AUDIT_DEGRADATION";
+        details.auditDegradationReason = "error";
+      } else {
+        finalBlockedRules = ["R8_AUDIT_ERROR"];
+        verdict = "REJECT";
+      }
+    } else if (warnedRules.length > 0) {
+      verdict = "PASS_WITH_WARNING";
+    } else {
+      verdict = "PASS";
+    }
   }
 
   const receiptText = formatGateReceipt({
@@ -467,6 +595,9 @@ export function decideGate(input = {}, context = {}) {
     warnedRules,
     details,
     register,
+    risk,
+    auditPassed,
+    pollutionAlert,
   });
 
   return {
@@ -475,12 +606,19 @@ export function decideGate(input = {}, context = {}) {
     blockedRules: finalBlockedRules,
     warnedRules,
     details,
+    risk,
+    auditVerdict,
     receiptText,
     metrics: {
       hedgeHits: hedge.hedgeHits,
       priorRejects,
       unverifiedScopeCount: effectiveUnverifiedScope.length,
       fillerUnverifiedCount,
+      riskTier: risk.tier,
+      changedLines: risk.changedLines,
+      auditRejectCount: totalAuditRejects,
+      auditErrorCount: consecutiveTrailingAuditErrors,
+      pollutionAlert,
     },
   };
 }

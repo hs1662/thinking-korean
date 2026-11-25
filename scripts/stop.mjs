@@ -64,6 +64,7 @@ export function handleStop(stdinText, readTextFile) {
     ledger = readFactLedger(transcriptPath, cwd, gitLedger.gitRoot || "");
   }
 
+  const isAuditorSession = ledger?.sessionRole === "auditor";
   const gateBlockedThisTurn = Boolean(ledger?.gateBlockedThisTurn);
   const hasPassingPostWriteGate = Boolean(
     ledger &&
@@ -71,7 +72,13 @@ export function handleStop(stdinText, readTextFile) {
         (attempt) => attempt.stepIndex > ledger.lastWriteStepIndex && PASSING_VERDICTS.has(attempt.verdict),
       ),
   );
-  const gateViolation = Boolean(ledger && ledger.transcriptAvailable && ledger.turnWrittenFiles.size > 0 && !hasPassingPostWriteGate);
+  const gateViolation = Boolean(
+    !isAuditorSession &&
+      ledger &&
+      ledger.transcriptAvailable &&
+      ledger.turnWrittenFiles.size > 0 &&
+      !hasPassingPostWriteGate,
+  );
 
   const langDecision = decideStopAction(steps, {
     lastUserInput: payload.lastUserInput ?? payload.last_user_input,

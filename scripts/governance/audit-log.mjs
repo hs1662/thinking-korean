@@ -3,20 +3,26 @@ import { join } from "node:path";
 import { resolvePluginDataDir } from "../hook-io.mjs";
 import { ALLOWED_SCHEMA_REGISTERS } from "./constants.mjs";
 
+export function readGovernanceConfig(dataDir = resolvePluginDataDir()) {
+  try {
+    const raw = readFileSync(join(dataDir, "config.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export function resolveSchemaRegister(dataDir = resolvePluginDataDir()) {
   const envVal = typeof process.env.HSTACK_SCHEMA_REGISTER === "string" ? process.env.HSTACK_SCHEMA_REGISTER.trim() : "";
   if (ALLOWED_SCHEMA_REGISTERS.has(envVal)) {
     return envVal;
   }
 
-  try {
-    const raw = readFileSync(join(dataDir, "config.json"), "utf8");
-    const parsed = JSON.parse(raw);
-    const configVal = typeof parsed?.schemaRegister === "string" ? parsed.schemaRegister.trim() : "";
-    if (ALLOWED_SCHEMA_REGISTERS.has(configVal)) {
-      return configVal;
-    }
-  } catch {
+  const parsed = readGovernanceConfig(dataDir);
+  const configVal = typeof parsed?.schemaRegister === "string" ? parsed.schemaRegister.trim() : "";
+  if (ALLOWED_SCHEMA_REGISTERS.has(configVal)) {
+    return configVal;
   }
 
   return "neutral";
