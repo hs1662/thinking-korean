@@ -845,6 +845,34 @@ describe("structured drift marker tags", () => {
     assert.equal(contentOnly.action, "inject");
     assert.deepEqual(contentOnly.driftedFields, ["thinking"]);
   });
+
+  it("scans untagged legacy drift markers with repeated tokens in linear time without quadratic backtracking", () => {
+    const repeatedDrifted = makeStep(0, "SYSTEM_MESSAGE", {
+      content: `${DRIFT_MARKER} ${"drifted ".repeat(15_000)}`,
+    });
+    const startMs = performance.now();
+    const parsed = parseDriftMarkerStep(repeatedDrifted);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time legacy marker scan (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.equal(parsed?.structured, false);
+    assert.deepEqual(parsed?.fields, []);
+
+    const legacyThinking = parseDriftMarkerStep(
+      makeStep(1, "SYSTEM_MESSAGE", { content: `${DRIFT_MARKER} thinking has drifted in this step.` }),
+    );
+    assert.deepEqual(legacyThinking?.fields, ["thinking"]);
+
+    const legacyContent = parseDriftMarkerStep(
+      makeStep(2, "SYSTEM_MESSAGE", { content: `${DRIFT_MARKER} drifted response in content` }),
+    );
+    assert.deepEqual(legacyContent?.fields, ["content"]);
+
+    const crossSentence = parseDriftMarkerStep(
+      makeStep(3, "SYSTEM_MESSAGE", { content: `${DRIFT_MARKER} drifted here. thinking and content are fine.` }),
+    );
+    assert.deepEqual(crossSentence?.fields, []);
+  });
 });
 
 describe("regression #6: PreToolUse denial interplay with PostInvocation and the retry budget", () => {
