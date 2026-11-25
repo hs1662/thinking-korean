@@ -828,4 +828,15 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
+
+  it("scans long underscore-joined tokens without a slash in linear time without quadratic RELATIVE_PATH_RE backtracking", () => {
+    const underscoreChain = `a_${"b_".repeat(35_000)}c`;
+    const sample = `긴 밑줄 토큰 ${underscoreChain} 과 scripts/analyzer.mjs 상대 경로를 한국어 문장으로 상세하게 확인하고 검증한다.`;
+    const startMs = performance.now();
+    const analysis = analyzeField("content", sample);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.equal(analysis.status, "korean");
+  });
 });
