@@ -35,7 +35,7 @@ const PLUGIN_ROOT = resolve(TEST_DIR, "..");
 const DEFAULT_MODELS = ["gemini-4-neon-xhigh", "claude-opus-5-5-high"];
 export const DEFAULT_TIMEOUT_SECONDS = 180;
 const HARD_KILL_GRACE_MS = 10_000;
-const PLUGIN_ENTRIES = ["plugin.json", "hooks.json", "rules", "scripts", "assets"];
+const PLUGIN_ENTRIES = ["plugin.json", "hooks.json", "mcp_config.json", "rules", "scripts", "assets"];
 const AUTH_AND_BUILTIN_ITEMS = ["antigravity-oauth-token", "builtin", "installation_id"];
 const ANALYZER_MODULE_DIR = join(PLUGIN_ROOT, "scripts", "analyzer");
 const ANALYZE_FIELD_EXPORT_RE = /export\s+function\s+analyzeField\s*\(/;
@@ -353,8 +353,12 @@ function safeRealpath(pathValue) {
   }
 }
 
+function readHooksConfig() {
+  return JSON.parse(readFileSync(join(PLUGIN_ROOT, "hooks.json"), "utf8"));
+}
+
 function createIsolatedEnvironment(testCase, pluginManifest) {
-  const runRoot = mkdtempSync(join(tmpdir(), "thinking-korean-live-"));
+  const runRoot = mkdtempSync(join(tmpdir(), "hstack-live-"));
   try {
     const homeDir = join(runRoot, "home");
     const appDataDir = join(homeDir, ".gemini", "antigravity-cli");
@@ -398,7 +402,7 @@ function createIsolatedEnvironment(testCase, pluginManifest) {
     );
     writeFileSync(join(configDir, "config.json"), `${JSON.stringify({ plugins: {} }, null, 2)}\n`, "utf8");
 
-    const pluginName = pluginManifest.name || "thinking-korean";
+    const pluginName = pluginManifest.name || "hstack";
     const pluginDest = join(configPluginsDir, pluginName);
     mkdirSync(pluginDest, { recursive: true });
     for (const entry of PLUGIN_ENTRIES) {
@@ -473,7 +477,7 @@ function verifyIsolatedPlugin(workspaceDir, env, pluginDest, pluginManifest) {
     hooks: entry.hooks ?? [],
   }));
 
-  const expectedName = pluginManifest.name || "thinking-korean";
+  const expectedName = pluginManifest.name || "hstack";
   if (loadedPlugins.length !== 1) {
     return {
       ok: false,
@@ -515,10 +519,14 @@ function verifyIsolatedPlugin(workspaceDir, env, pluginDest, pluginManifest) {
     };
   }
 
-  if (!Array.isArray(onlyPlugin.hooks) || !onlyPlugin.hooks.includes("thinking-korean-drift-guard")) {
+  const expectedHookKeys = Object.keys(readHooksConfig());
+  const missingHooks = expectedHookKeys.filter(
+    (hookKey) => !Array.isArray(onlyPlugin.hooks) || !onlyPlugin.hooks.includes(hookKey),
+  );
+  if (missingHooks.length > 0) {
     return {
       ok: false,
-      error: `Plugin "${expectedName}" loaded without thinking-korean-drift-guard hook`,
+      error: `Plugin "${expectedName}" loaded without expected hook group(s): ${missingHooks.join(", ")}`,
       loadedPlugins,
     };
   }

@@ -1,9 +1,9 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
-  "name": "thinking-korean",
-  "displayName": "Thinking Korean",
-  "version": "1.1.0",
-  "description": "Keep model thinking traces, responses, and UI checklist/tool labels in natural conversational Korean with an always-on rule plus PreToolUse, PostInvocation, and Stop English-drift recovery.",
+  "name": "hstack",
+  "displayName": "hstack",
+  "version": "2.0.0",
+  "description": "Keep model thinking traces, responses, and UI labels in natural conversational Korean while enforcing an evidence-grounded completion gate with eager MCP, PreToolUse interception, unified Stop recovery, and audit logging.",
   "logo": "assets/logo.svg",
   "author": {
     "name": "hs1662",
@@ -16,14 +16,15 @@
     "korean",
     "thinking",
     "reasoning",
-    "language",
-    "i18n",
+    "governance",
+    "verification",
+    "mcp",
     "hooks",
     "rules"
   ],
   "suggestedPrompts": [
     "이 저장소의 핵심 구조를 분석하고 주요 모듈 간 의존성을 단계별로 설명해 줘",
-    "실패하는 테스트의 원인을 코드 추적부터 수정안 검증까지 단계별로 진단해 줘",
-    "이 함수의 동시성 경합 가능성을 점검하고 안전한 리팩터링 방안을 비교해 줘"
+    "실패하는 테스트의 원인을 코드 추적부터 수정, 검증 실행, 완료 검증 통과까지 완료해 줘",
+    "이 함수의 경계 오류를 수정하고 단위 테스트를 통과시킨 뒤 증거 기반으로 완료 보고해 줘"
   ]
 }

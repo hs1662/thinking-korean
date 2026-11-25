@@ -649,16 +649,19 @@ describe("regression #7: dual read path and hooks.json contract", () => {
     assert.ok(parsed.injectSteps[0].systemMessage.systemMessage.startsWith(DRIFT_MARKER));
   });
 
-  it("keeps the hooks.json PreToolUse matcher in 1:1 sync with PRE_TOOL_USE_UI_TOOLS", () => {
+  it("keeps the hooks.json PreToolUse UI matcher in 1:1 sync with PRE_TOOL_USE_UI_TOOLS", () => {
     const hooks = JSON.parse(readFileSync(HOOKS_JSON_PATH, "utf8"));
     const preToolEntries = Object.values(hooks).flatMap((group) => group.PreToolUse ?? []);
-    assert.equal(preToolEntries.length, 1);
-    const [entry] = preToolEntries;
-    assert.match(entry.matcher, /^[a-z_]+(?:\|[a-z_]+)*$/);
-    const matcherTools = entry.matcher.split("|");
+    const uiEntries = preToolEntries.filter((entry) =>
+      entry.hooks.some((hook) => hook.command.includes("scripts/pre-tool-use.mjs")),
+    );
+    assert.equal(uiEntries.length, 1);
+    const [entry] = uiEntries;
+    const stripped = entry.matcher.replace(/^\^\(/, "").replace(/\)\$$/, "");
+    assert.match(stripped, /^[a-z_]+(?:\|[a-z_]+)*$/);
+    const matcherTools = stripped.split("|");
     assert.equal(new Set(matcherTools).size, matcherTools.length, "matcher must not repeat tools");
     assert.deepEqual([...matcherTools].sort(), [...PRE_TOOL_USE_UI_TOOLS].sort());
-    assert.ok(entry.hooks.some((hook) => hook.command.includes("scripts/pre-tool-use.mjs")));
   });
 
   it("uses transcriptAvailable so a readable GENERIC-only transcript still denies English UI calls", () => {

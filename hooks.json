@@ -1,8 +1,8 @@
 {
-  "thinking-korean-drift-guard": {
+  "hstack-guard": {
     "PreToolUse": [
       {
-        "matcher": "update_steps|ask_question|todo_write|task_create|task_update|update_plan",
+        "matcher": "^(update_steps|ask_question|todo_write|task_create|task_update|update_plan)$",
         "hooks": [
           {
             "type": "command",
