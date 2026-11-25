@@ -9,8 +9,10 @@ import {
   SHORT_ENGLISH_PROSE_WORD_THRESHOLD,
 } from "./constants.mjs";
 import {
+  HAS_HANGUL_RE,
   PROSE_OPENER_RE,
   PROSE_TOKEN_RE,
+  englishWords,
   hasEnglishProseFunctionWord,
   hasEnglishSentenceFiniteWord,
   measureLanguage,
@@ -20,6 +22,7 @@ import { extractNaturalText, stripSummarizerBoilerplate } from "./stripper.mjs";
 
 const HARD_RUN_SPLIT_RE = /[|;:·•→←↔⇒]+/;
 const LIST_ITEM_SPLIT_RE = /(?:,|[ \t]+(?:\/|\+|&)[ \t]+)/;
+const INLINE_SENTENCE_SPLIT_RE = /(?<=[.!?])[ \t]+/;
 
 function isDriftedSegmentMetrics(metrics, { segmentMinNaturalChars, segmentMaxHangulRatio, minLatinCharsForDrift }) {
   return (
@@ -50,6 +53,9 @@ function hasDriftedSegment(lines, thresholds) {
     if (isDriftedSegmentMetrics(metrics, thresholds)) {
       return true;
     }
+    if (hasInlineEnglishSentence(line.prose, minLatinCharsForDrift, shortEnglishProseWordThreshold)) {
+      return true;
+    }
     if (
       isShortEnglishProseMetrics(metrics) &&
       metrics.latinCount >= minLatinCharsForDrift &&
@@ -62,6 +68,37 @@ function hasDriftedSegment(lines, thresholds) {
     }
   }
 
+  return false;
+}
+
+function hasInlineEnglishSentence(proseLine, minLatinCharsForDrift, shortEnglishProseWordThreshold) {
+  if (!HAS_HANGUL_RE.test(proseLine)) {
+    return false;
+  }
+  const sentences = proseLine.split(INLINE_SENTENCE_SPLIT_RE);
+  if (sentences.length < 2) {
+    return false;
+  }
+  for (const rawSentence of sentences) {
+    const sentence = rawSentence.trim();
+    if (sentence.length === 0 || HAS_HANGUL_RE.test(sentence)) {
+      continue;
+    }
+    const words = englishWords(sentence);
+    if (words.length < shortEnglishProseWordThreshold) {
+      continue;
+    }
+    if (measureLanguage(sentence).latinCount < minLatinCharsForDrift) {
+      continue;
+    }
+    if (
+      PROSE_OPENER_RE.test(sentence) ||
+      hasEnglishSentenceFiniteWord(words) ||
+      hasEnglishProseFunctionWord(words)
+    ) {
+      return true;
+    }
+  }
   return false;
 }
 

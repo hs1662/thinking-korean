@@ -52,6 +52,7 @@ export function stripFencedCodeBlocks(text) {
   let inFence = false;
   let fenceChar = "";
   let fenceLen = 0;
+  let fencedLines = [];
 
   for (const line of text.split("\n")) {
     if (!inFence) {
@@ -60,7 +61,7 @@ export function stripFencedCodeBlocks(text) {
         inFence = true;
         fenceChar = openMatch[1][0];
         fenceLen = openMatch[1].length;
-        out.push("");
+        fencedLines = [line];
         continue;
       }
       out.push(line);
@@ -72,8 +73,15 @@ export function stripFencedCodeBlocks(text) {
       inFence = false;
       fenceChar = "";
       fenceLen = 0;
-      out.push("");
+      fencedLines = [];
+      out.push("", "");
+    } else {
+      fencedLines.push(line);
     }
+  }
+
+  if (inFence && fencedLines.length > 0) {
+    out.push(...fencedLines);
   }
 
   return out.join("\n");

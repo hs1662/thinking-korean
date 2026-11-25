@@ -10,6 +10,7 @@ import {
   HAS_HANGUL_RE,
   IMPERATIVE,
   PROSE_OPENER_RE,
+  UI_TASK_OR_ROLE,
   englishWords,
   hasEnglishProseFunctionWord,
   hasEnglishSentenceFiniteWord,
@@ -19,7 +20,7 @@ import {
 } from "./lexicon.mjs";
 import { extractNaturalText } from "./stripper.mjs";
 
-const KOREAN_LABEL_PREFIX_RE = /^\s*(?:\d+\s*)?[가-힣]{1,6}(?:\s+[가-힣]{1,4})?(?:\s*\d+)?\s*[:：\-–]\s*/;
+const KOREAN_LABEL_PREFIX_RE = /^\s*(?:\d+\s*)?[가-힣]{1,6}(?:\s+[가-힣]{1,6}){0,2}(?:\s*\d+)?\s*[:：\-–]\s*/;
 const TOKEN_EDGE_PUNCT_RE = /^[("'“‘[{<]+|(?<![)"'”’\]}>,.;:!?])[)"'”’\]}>,.;:!?]+$/g;
 const VERSION_TOKEN_RE = /^v?\d+(?:\.(?:\d+|[xX*]))*\+?$/;
 const ACRONYM_TOKEN_RE = /^[A-Z][A-Z0-9]+s?$/;
@@ -89,7 +90,8 @@ function isEnglishLabelDrift(text, { allowConnector = false } = {}) {
 
   const lowercaseWords = counted.filter((token) => LOWER_WORD_TOKEN_RE.test(token)).length;
   const hasImperative = plainWords.some((word) => hasWordFlag(lowerOf(word), IMPERATIVE));
-  if (lowercaseWords >= 2 || (lowercaseWords >= 1 && hasImperative)) {
+  const hasTaskOrRole = plainWords.some((word) => hasWordFlag(lowerOf(word), UI_TASK_OR_ROLE));
+  if (lowercaseWords >= 2 || hasImperative || hasTaskOrRole) {
     return true;
   }
   if (counted.every(isProperToken)) {
@@ -147,7 +149,7 @@ function isEnglishUiEntry(rawText) {
   }
   const natural = extractNaturalText(rawText);
   if (!HAS_HANGUL_RE.test(natural)) {
-    return isEnglishLabelDrift(rawText);
+    return isEnglishLabelDrift(natural);
   }
   return hasEnglishClauseInMixedText(natural);
 }

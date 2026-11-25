@@ -4,6 +4,7 @@ export const STOP = 1; // stopwords, matched only as ALL-CAPS tokens
 export const FUNCTION = 2; // English prose function words
 export const FINITE = 4; // finite verbs that mark an English sentence
 export const IMPERATIVE = 8; // imperative verbs that open command-like labels
+export const UI_TASK_OR_ROLE = 16; // common English task-summary or agent-role nouns
 
 const WORDS_BY_FLAG = [
   [
@@ -37,6 +38,13 @@ const WORDS_BY_FLAG = [
       "deny allow block retry recover restore rollback reset init initialize generate scaffold render " +
       "display print log monitor watch poll wait schedule trigger dispatch invoke execute call send post " +
       "submit publish release ship finalize complete finish apply patch revert stash stage commit tag",
+  ],
+  [
+    UI_TASK_OR_ROLE,
+    "status execution verification validation analysis inspection migration deployment configuration " +
+      "initialization startup shutdown cleanup generation compilation diagnosis recovery summary overview " +
+      "researcher debugger analyzer auditor reviewer verifier validator tester builder scanner investigator " +
+      "explorer planner designer architect engineer specialist coordinator worker helper inspector implementer",
   ],
 ];
 
