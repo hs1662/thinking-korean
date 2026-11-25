@@ -40,7 +40,7 @@ const LANG_CANONICAL_MAP = new Map([
   ["외국어", "foreign"],
 ]);
 
-const KO_COMPLAINT_PREFIX_GUARD = "(?<!왜\\s|자꾸\\s|자꾸만\\s|계속\\s)";
+const KO_COMPLAINT_PREFIX_GUARD = "(?<!(?:왜|자꾸만?|계속(?:해서)?)(?:\\s+[가-힣]{1,4}){0,2}\\s+)";
 const KO_REQUEST_NOUN_ACTION = "(?:번역|영작|작성|답변|대답|답장|응답|설명|요약|정리|출력|변환|표현|교정)";
 const KO_REQUEST_NOUN_ENDING =
   "(?:해\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|주시기|주길|라|달라|보여\\s*줘|보여주세요)|해서\\s*(?:(?:보여|알려)\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|달라|라)|보여주세요|보여줘|알려주세요|알려줘)|해주세요|해줘|해라|하라|하시오|하십시오|하세요(?!\\?)|하고(?=,|\\s)|하길\\s*바라|하기\\s*바라|하기를\\s*바라|하길\\s*원해|하기\\s*원해|하기를\\s*원해|(?:[을를]\\s*|(?<=\\s))(?:원해|원해요|원합니다|바라|바래|바랍니다)|(?:[을를]\\s*)?부탁(?:해|해요|합니다|드립니다|드려요)?|해(?=$|[.!,;\\n])|해요(?=$|[.!,;\\s])|:(?=$|\\s))";
@@ -335,6 +335,7 @@ export function isExplicitEnglishOutputRequest(rawText) {
   }
 
   const normalizedBody = body
+    .replace(/？/g, "?")
     .replace(INTERNAL_DOT_RE, "·")
     .replace(KO_REASONING_KOREAN_RE, DESCRIPTIVE_MASK)
     .replace(EN_REASONING_KOREAN_RE, DESCRIPTIVE_MASK);
@@ -346,7 +347,7 @@ export function isExplicitEnglishOutputRequest(rawText) {
     if (trimmed.length === 0) {
       continue;
     }
-    const normalized = trimmed.endsWith("?") ? trimmed.replace(/[ \t?]*\?+$/, "?") : trimmed;
+    const normalized = trimmed.endsWith("?") ? trimmed.replace(/[\s,;.!…~?]*\?+$/, "?") : trimmed;
     if (normalized === "?") {
       if (sentences.length > 0 && !sentences[sentences.length - 1].endsWith("?")) {
         sentences[sentences.length - 1] += "?";
