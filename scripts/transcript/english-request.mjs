@@ -325,6 +325,19 @@ function stripNegatedClausesAndCollectLangs(text) {
   return { unnegated, negatedLangs };
 }
 
+const TRAILING_QUESTION_PUNCT_RE = /[\s,;.!…~?]/;
+
+function collapseTrailingQuestionPunctuation(text) {
+  if (!text.endsWith("?")) {
+    return text;
+  }
+  let end = text.length;
+  while (end > 0 && TRAILING_QUESTION_PUNCT_RE.test(text[end - 1])) {
+    end -= 1;
+  }
+  return `${text.slice(0, end)}?`;
+}
+
 export function isExplicitEnglishOutputRequest(rawText) {
   const body = extractUserRequestBody(rawText);
   if (body.length === 0) {
@@ -347,10 +360,10 @@ export function isExplicitEnglishOutputRequest(rawText) {
     if (trimmed.length === 0) {
       continue;
     }
-    const normalized = trimmed.endsWith("?") ? trimmed.replace(/[\s,;.!…~?]*\?+$/, "?") : trimmed;
+    const normalized = collapseTrailingQuestionPunctuation(trimmed);
     if (normalized === "?") {
       if (sentences.length > 0 && !sentences[sentences.length - 1].endsWith("?")) {
-        sentences[sentences.length - 1] += "?";
+        sentences[sentences.length - 1] = collapseTrailingQuestionPunctuation(`${sentences[sentences.length - 1]}?`);
       }
       continue;
     }
