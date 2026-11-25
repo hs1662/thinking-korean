@@ -1,8 +1,6 @@
 import { posix } from "node:path";
-import { GATE_STOP_MARKER } from "../transcript/markers.mjs";
 
 export const GATE_TOOL_NAME = "mcp_hstack_gate_verify_completion";
-export const GATE_BLOCK_MARKER = GATE_STOP_MARKER;
 
 export const PASSING_VERDICTS = new Set([
   "PASS",
@@ -64,16 +62,6 @@ export const READ_ONLY_BINARIES = new Set([
   "which",
   "tree",
   "file",
-]);
-
-export const READ_ONLY_CMDS = new Set([
-  "git status",
-  "git diff",
-  "git log",
-  "git show",
-  "git branch",
-  "git rev-parse",
-  ...READ_ONLY_BINARIES,
 ]);
 
 export const VERIFICATION_BINARIES = new Set([

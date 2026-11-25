@@ -384,10 +384,7 @@ function isBlankAsciiBuffer(buf) {
   return true;
 }
 
-function isValidSkippedShortLine(buf, prefixType) {
-  if (prefixType === null) {
-    return false;
-  }
+function isValidSkippedShortLine(buf) {
   const state = createJsonObjectValidator();
   advanceJsonObjectValidator(state, buf, 0, buf.length);
   return isValidJsonObjectComplete(state);
@@ -407,7 +404,8 @@ function isValidSkippedShortLine(buf, prefixType) {
  *    and the 0-based count of valid JSON records seen before this line. Return `false` if the record was NOT a
  *    valid tracked JSON object; otherwise `validRecordCount` is incremented.
  */
-export function streamTranscriptRecords(filePath, visitor) {
+export function streamTranscriptRecords(filePath, visitor, options = {}) {
+  const onSkipped = typeof options?.onSkipped === "function" ? options.onSkipped : null;
   const fd = openSync(filePath, "r");
   const chunk = Buffer.allocUnsafe(CHUNK_SIZE);
   const prefixBuf = Buffer.allocUnsafe(PREFIX_SCAN_BYTES);
@@ -466,24 +464,28 @@ export function streamTranscriptRecords(filePath, visitor) {
     }
   };
 
+  const finishSkippedLine = (prefixType, isValid) => {
+    const recordIndex = validRecordCount;
+    if (isValid) {
+      validRecordCount += 1;
+    }
+    if (onSkipped) {
+      onSkipped(prefixType, isValid, recordIndex);
+    }
+  };
+
   const finalizeLine = () => {
     if (lineState === "skip") {
-      if (linePrefixType !== null && isValidJsonObjectComplete(skipValidator)) {
-        validRecordCount += 1;
-      }
+      finishSkippedLine(linePrefixType, isValidJsonObjectComplete(skipValidator));
     } else if (lineState === "undecided") {
       const prefixSlice = stripBomBytes(prefixBuf.subarray(0, prefixLen), isFirstLine);
       if (!isBlankAsciiBuffer(prefixSlice)) {
         const prefixType = extractLinePrefixType(prefixSlice);
         const decision = visitor(prefixType, null);
         if (decision === false) {
-          if (isValidSkippedShortLine(prefixSlice, prefixType)) {
-            validRecordCount += 1;
-          }
+          finishSkippedLine(prefixType, isValidSkippedShortLine(prefixSlice));
         } else if (typeof decision === "number" && Number.isFinite(decision) && decision > 0 && prefixSlice.length > decision) {
-          if (isValidSkippedShortLine(prefixSlice, prefixType)) {
-            validRecordCount += 1;
-          }
+          finishSkippedLine(prefixType, isValidSkippedShortLine(prefixSlice));
         } else {
           deliverLine(prefixType, prefixSlice);
         }

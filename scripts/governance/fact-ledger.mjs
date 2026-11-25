@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { join, posix } from "node:path";
 import { resolveTranscriptCandidates, streamTranscriptRecords } from "../hook-io.mjs";
+import { GATE_STOP_MARKER } from "../transcript/markers.mjs";
 import { getToolCalls, isPreToolDenialStep, parseRawRecord, parseStepIndex } from "../transcript/steps.mjs";
 import {
   CREATE_AS_READ_TOOL_NAMES,
   EXEC_TOOL_NAMES,
-  GATE_BLOCK_MARKER,
   GATE_TOOL_NAME,
   PASSING_VERDICTS,
   READ_ONLY_BINARIES,
@@ -23,16 +23,34 @@ const GIT_TIMEOUT_MS = 1500;
 const MAX_UNWRAP_DEPTH = 2;
 
 const SHELL_WRAPPERS = new Set(["sudo", "time", "env", "command", "nohup"]);
+const WRAPPER_FLAGS_WITH_ARG = {
+  env: new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]),
+  sudo: new Set(["-u", "--user", "-g", "--group", "-C", "--close-from", "-h", "--host", "-p", "--prompt", "-r", "--role", "-t", "--type", "-D", "--chdir"]),
+};
 const SHELL_NEUTRAL_BUILTINS = new Set(["cd", "export", "set", "unset", "true", "false", "sleep", "umask"]);
 const GIT_FLAGS_WITH_ARG = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix"]);
 const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-const FAILURE_PATTERNS = [
-  /exit\s+code[:\s]+[1-9]\d*/i,
-  /Command failed/i,
-  /AssertionError/,
-  /^\s*FAIL\b/m,
-  /fail\s+[1-9]\d*/i,
+const EXIT_CODE_FAIL_RE = /exit\s+code[:\s]+[1-9]\d*/i;
+const TAP_FAIL_ZERO_RE = /(?:^|\n)[ \t]*(?:#|ℹ)[ \t]*fail[ \t]+0\b/m;
+const TAP_FAIL_NONZERO_RE = /(?:^|\n)[ \t]*(?:#|ℹ)[ \t]*fail[ \t]+[1-9]\d*\b/m;
+const PASSING_TEST_LINE_RE = /^\s*(?:ok\s+\d+|ok\b|✔|✓|#\s*Subtest:|▶)/;
+const FAILURE_LINE_PATTERNS = [
+  EXIT_CODE_FAIL_RE,
+  /^\s*(?:Error:\s*)?Command failed\b/i,
+  /^\s*(?:AssertionError\b|[\w$.]*AssertionError\b)/,
+  /^\s*FAIL\b/,
+  /(?:^|[ \t#ℹ])fail[ \t]+[1-9]\d*\b/i,
+];
+
+const PRE_TOOL_NOTICE_PREFIX = "A pre-tool hook changed the arguments";
+const VERDICT_HEADER_ENTRIES = [
+  [VERDICT_HEADERS.REJECT_NEUTRAL, "REJECT"],
+  [VERDICT_HEADERS.REJECT_AUDIT, "REJECT"],
+  [VERDICT_HEADERS.PASS_WITH_DEGRADATION, "PASS_WITH_DEGRADATION"],
+  [VERDICT_HEADERS.PASS_WITH_WARNING, "PASS_WITH_WARNING"],
+  [VERDICT_HEADERS.PASS, "PASS"],
+  [VERDICT_HEADERS.SKIPPED_NO_SESSION, "SKIPPED_NO_SESSION"],
 ];
 
 const TEST_INFRA_EXACT_FILES = ["pytest.ini", "pyproject.toml", "Cargo.toml", "go.mod", "Makefile"];
@@ -124,15 +142,23 @@ export function normalizeWorkspacePath(rawPath, cwd = "", gitRoot = "") {
         break;
       }
     }
-    if (cwdRel && cwdRel !== "." && !normalized.startsWith("../")) {
-      normalized = posix.normalize(`${cwdRel}/${normalized}`);
+    if (cwdRel && cwdRel !== ".") {
+      const alreadyGitRootRelative =
+        !normalized.startsWith("../") &&
+        gitRoot &&
+        existsSync(gitRoot) &&
+        !existsSync(join(cwd, normalized)) &&
+        existsSync(join(gitRoot, normalized));
+      if (!alreadyGitRootRelative) {
+        normalized = posix.normalize(`${cwdRel}/${normalized}`);
+      }
     }
   }
   normalized = normalized.replace(/^\.\//, "");
   return stripTrailingSlashes(normalized);
 }
 
-function splitShellSegments(commandLine) {
+export function splitShellSegments(commandLine) {
   const segments = [];
   let current = "";
   let quote = null;
@@ -214,17 +240,92 @@ function tokenizeSegment(segment) {
   return tokens;
 }
 
+function hasUnquotedFileRedirection(segment) {
+  let quote = null;
+  for (let i = 0; i < segment.length; i += 1) {
+    const ch = segment[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"' && i + 1 < segment.length) {
+        i += 1;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < segment.length) {
+      i += 1;
+      continue;
+    }
+    if (ch === ">") {
+      let j = i + 1;
+      if (segment[j] === ">") {
+        j += 1;
+      }
+      if (segment[j] === "&") {
+        let k = j + 1;
+        while (k < segment.length && /\d/.test(segment[k])) {
+          k += 1;
+        }
+        if (k > j + 1 || segment[j + 1] === "-") {
+          i = k - 1;
+          continue;
+        }
+      }
+      while (j < segment.length && /\s/.test(segment[j])) {
+        j += 1;
+      }
+      const rest = segment.slice(j);
+      if (/^\/dev\/null(?:\s|$)/.test(rest)) {
+        i = j + "/dev/null".length - 1;
+        continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 function classifySingleSegment(segment) {
   const cleaned = segment.trim().replace(/^[(!\s]+/, "");
   if (cleaned.length === 0) {
     return "empty";
   }
+  const hasFileRedirect = hasUnquotedFileRedirection(cleaned);
   const tokens = tokenizeSegment(cleaned);
   let idx = 0;
   while (idx < tokens.length) {
     const tok = tokens[idx];
-    if (tok === "!" || tok === "(" || ENV_ASSIGN_RE.test(tok) || SHELL_WRAPPERS.has(tok)) {
+    if (tok === "!" || tok === "(" || ENV_ASSIGN_RE.test(tok)) {
       idx += 1;
+      continue;
+    }
+    if (SHELL_WRAPPERS.has(tok)) {
+      const valueFlags = WRAPPER_FLAGS_WITH_ARG[tok];
+      idx += 1;
+      while (idx < tokens.length) {
+        const arg = tokens[idx];
+        if (arg === "--") {
+          idx += 1;
+          break;
+        }
+        if (valueFlags && valueFlags.has(arg)) {
+          idx += 2;
+          continue;
+        }
+        if (arg.startsWith("-") && arg.length > 1) {
+          idx += 1;
+          continue;
+        }
+        if (tok === "env" && ENV_ASSIGN_RE.test(arg)) {
+          idx += 1;
+          continue;
+        }
+        break;
+      }
       continue;
     }
     break;
@@ -251,14 +352,14 @@ function classifySingleSegment(segment) {
       break;
     }
     const subcommand = tokens[subIdx] ?? "";
-    if (READ_ONLY_GIT_SUBCOMMANDS.has(subcommand)) {
+    if (READ_ONLY_GIT_SUBCOMMANDS.has(subcommand) && !hasFileRedirect) {
       return "read_only";
     }
     return "other";
   }
 
   if (READ_ONLY_BINARIES.has(baseBin) || SHELL_NEUTRAL_BUILTINS.has(baseBin)) {
-    return "read_only";
+    return hasFileRedirect ? "other" : "read_only";
   }
   if (VERIFICATION_BINARIES.has(baseBin) || rawBin.startsWith("./") || rawBin.startsWith("../")) {
     return "verification";
@@ -301,7 +402,24 @@ export function inferExecutionFailure(result) {
   if (tail.length === 0) {
     return false;
   }
-  return FAILURE_PATTERNS.some((pattern) => pattern.test(tail));
+  if (EXIT_CODE_FAIL_RE.test(tail)) {
+    return true;
+  }
+  if (TAP_FAIL_NONZERO_RE.test(tail)) {
+    return true;
+  }
+  if (TAP_FAIL_ZERO_RE.test(tail)) {
+    return false;
+  }
+  for (const line of tail.split(/\r?\n/)) {
+    if (PASSING_TEST_LINE_RE.test(line)) {
+      continue;
+    }
+    if (FAILURE_LINE_PATTERNS.some((pattern) => pattern.test(line))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function unwrapSerialized(value, depth = 0) {
@@ -448,7 +566,6 @@ export function readLatestTranscriptTokens(transcriptPath) {
         try {
           closeSync(fd);
         } catch {
-          // ignore close error
         }
       }
     }
@@ -456,24 +573,20 @@ export function readLatestTranscriptTokens(transcriptPath) {
   return empty;
 }
 
-function parseGateVerdictFromText(text) {
-  if (typeof text !== "string" || text.length === 0) {
+function parseGateVerdictFromText(fullContent) {
+  if (typeof fullContent !== "string" || fullContent.length === 0) {
     return "UNKNOWN";
   }
-  if (text.includes(VERDICT_HEADERS.PASS_WITH_DEGRADATION)) {
-    return "PASS_WITH_DEGRADATION";
-  }
-  if (text.includes(VERDICT_HEADERS.PASS_WITH_WARNING)) {
-    return "PASS_WITH_WARNING";
-  }
-  if (text.includes(VERDICT_HEADERS.PASS)) {
-    return "PASS";
-  }
-  if (text.includes(VERDICT_HEADERS.SKIPPED_NO_SESSION)) {
-    return "SKIPPED_NO_SESSION";
-  }
-  if (text.includes(VERDICT_HEADERS.REJECT_NEUTRAL) || text.includes(VERDICT_HEADERS.REJECT_AUDIT)) {
-    return "REJECT";
+  for (const rawLine of fullContent.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0 || line.startsWith(PRE_TOOL_NOTICE_PREFIX)) {
+      continue;
+    }
+    for (const [header, verdict] of VERDICT_HEADER_ENTRIES) {
+      if (line.startsWith(header)) {
+        return verdict;
+      }
+    }
   }
   return "UNKNOWN";
 }
@@ -546,122 +659,123 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
     return Boolean(nextPending && (nextPending.kind === "exec" || nextPending.kind === "gate"));
   };
 
-  const result = streamTranscriptRecords(filePath, (prefixType, lineBuf, recordIndex) => {
-    if (lineBuf === null) {
-      if (prefixType === "USER_INPUT" || prefixType === "PLANNER_RESPONSE" || prefixType === "SYSTEM_MESSAGE" || prefixType === null) {
-        return true;
-      }
-      if (prefixType === "GENERIC") {
-        if (peekNeedsGeneric()) {
+  const result = streamTranscriptRecords(
+    filePath,
+    (prefixType, lineBuf, recordIndex) => {
+      if (lineBuf === null) {
+        if (prefixType === "USER_INPUT" || prefixType === "PLANNER_RESPONSE" || prefixType === "SYSTEM_MESSAGE" || prefixType === null) {
           return true;
         }
-        if (pendingCalls.length > 0) {
-          pendingCalls.shift();
+        if (prefixType === "GENERIC") {
+          return peekNeedsGeneric();
         }
         return false;
       }
-      return false;
-    }
 
-    const parsed = parseRawRecord(lineBuf.toString("utf8"));
-    if (!parsed) {
-      return false;
-    }
-
-    const rawIndex = parsed.step_index !== undefined ? parsed.step_index : parsed.stepIndex;
-    const stepIndex = parseStepIndex(rawIndex, recordIndex);
-
-    if (parsed.type === "USER_INPUT") {
-      resetTurn(stepIndex);
-      return true;
-    }
-
-    if (parsed.type === "SYSTEM_MESSAGE") {
-      if (typeof parsed.content === "string" && parsed.content.includes(GATE_BLOCK_MARKER)) {
-        ledger.gateBlockedThisTurn = true;
-      }
-      return true;
-    }
-
-    if (parsed.type === "PLANNER_RESPONSE") {
-      pendingCalls = [];
-      const tokens = extractLatestTokens(parsed);
-      if (tokens) {
-        ledger.latestTokens = tokens;
+      const parsed = parseRawRecord(lineBuf.toString("utf8"));
+      if (!parsed) {
+        return false;
       }
 
-      for (const call of getToolCalls(parsed)) {
-        const name = typeof call?.name === "string" ? call.name : "";
-        const { readPaths, writePaths } = extractToolPaths(call, cwd, gitRoot);
-        for (const p of readPaths) {
-          ledger.sessionReadFiles.add(p);
-        }
-        for (const p of writePaths) {
-          ledger.turnWrittenFiles.add(p);
-          ledger.lastWriteStepIndex = stepIndex;
-          if (!isExemptDocOrAssetPath(p)) {
-            ledger.turnCodeWrittenFiles.add(p);
-            ledger.lastCodeWriteStepIndex = stepIndex;
-          }
-        }
+      const rawIndex = parsed.step_index !== undefined ? parsed.step_index : parsed.stepIndex;
+      const stepIndex = parseStepIndex(rawIndex, recordIndex);
 
-        if (EXEC_TOOL_NAMES.has(name)) {
-          const command = extractCommandLine(call);
-          const entry = {
-            stepIndex,
-            command,
-            kind: classifyCommand(command),
-            passed: true,
-            status: "",
-            error: "",
-            tail: "",
-          };
-          ledger.turnExecutions.push(entry);
-          pendingCalls.push({ kind: "exec", entry });
-        } else if (name === GATE_TOOL_NAME) {
-          const entry = {
-            stepIndex,
-            verdict: "UNKNOWN",
-            passed: false,
-            blockedRules: [],
-            rawTail: "",
-          };
-          ledger.turnGateAttempts.push(entry);
-          pendingCalls.push({ kind: "gate", entry });
-        } else if (READ_TOOL_NAMES.has(name)) {
-          pendingCalls.push({ kind: "read" });
-        } else {
-          pendingCalls.push({ kind: "other" });
-        }
-      }
-      return true;
-    }
-
-    if (parsed.type === "GENERIC") {
-      const pending = pendingCalls.shift();
-      if (!pending) {
+      if (parsed.type === "USER_INPUT") {
+        resetTurn(stepIndex);
         return true;
       }
-      const status = typeof parsed.status === "string" ? parsed.status : "";
-      const error = typeof parsed.error === "string" ? parsed.error : "";
-      const tail = extractTail(parsed.content);
 
-      if (pending.kind === "exec") {
-        pending.entry.status = status;
-        pending.entry.error = error;
-        pending.entry.tail = tail;
-        pending.entry.passed = !isPreToolDenialStep(parsed) && !inferExecutionFailure({ status, error, tail });
-      } else if (pending.kind === "gate") {
-        const verdict = parseGateVerdictFromText(tail);
-        pending.entry.verdict = verdict;
-        pending.entry.passed = PASSING_VERDICTS.has(verdict);
-        pending.entry.rawTail = tail;
+      if (parsed.type === "SYSTEM_MESSAGE") {
+        if (typeof parsed.content === "string" && parsed.content.includes(GATE_STOP_MARKER)) {
+          ledger.gateBlockedThisTurn = true;
+        }
+        return true;
       }
-      return true;
-    }
 
-    return true;
-  });
+      if (parsed.type === "PLANNER_RESPONSE") {
+        pendingCalls = [];
+        const tokens = extractLatestTokens(parsed);
+        if (tokens) {
+          ledger.latestTokens = tokens;
+        }
+
+        for (const call of getToolCalls(parsed)) {
+          const name = typeof call?.name === "string" ? call.name : "";
+          const { readPaths, writePaths } = extractToolPaths(call, cwd, gitRoot);
+          for (const p of readPaths) {
+            ledger.sessionReadFiles.add(p);
+          }
+          for (const p of writePaths) {
+            ledger.turnWrittenFiles.add(p);
+            ledger.lastWriteStepIndex = stepIndex;
+            if (!isExemptDocOrAssetPath(p)) {
+              ledger.turnCodeWrittenFiles.add(p);
+              ledger.lastCodeWriteStepIndex = stepIndex;
+            }
+          }
+
+          if (EXEC_TOOL_NAMES.has(name)) {
+            const command = extractCommandLine(call);
+            const entry = {
+              stepIndex,
+              command,
+              kind: classifyCommand(command),
+              passed: true,
+              status: "",
+              error: "",
+              tail: "",
+            };
+            ledger.turnExecutions.push(entry);
+            pendingCalls.push({ kind: "exec", entry });
+          } else if (name === GATE_TOOL_NAME) {
+            const entry = {
+              stepIndex,
+              verdict: "UNKNOWN",
+              passed: false,
+            };
+            ledger.turnGateAttempts.push(entry);
+            pendingCalls.push({ kind: "gate", entry });
+          } else if (READ_TOOL_NAMES.has(name)) {
+            pendingCalls.push({ kind: "read" });
+          } else {
+            pendingCalls.push({ kind: "other" });
+          }
+        }
+        return true;
+      }
+
+      if (parsed.type === "GENERIC") {
+        const pending = pendingCalls.shift();
+        if (!pending) {
+          return true;
+        }
+        const status = typeof parsed.status === "string" ? parsed.status : "";
+        const error = typeof parsed.error === "string" ? parsed.error : "";
+
+        if (pending.kind === "exec") {
+          const tail = extractTail(parsed.content);
+          pending.entry.status = status;
+          pending.entry.error = error;
+          pending.entry.tail = tail;
+          pending.entry.passed = !isPreToolDenialStep(parsed) && !inferExecutionFailure({ status, error, tail });
+        } else if (pending.kind === "gate") {
+          const verdict = parseGateVerdictFromText(typeof parsed.content === "string" ? parsed.content : "");
+          pending.entry.verdict = verdict;
+          pending.entry.passed = PASSING_VERDICTS.has(verdict);
+        }
+        return true;
+      }
+
+      return true;
+    },
+    {
+      onSkipped(prefixType, isValid) {
+        if (prefixType === "GENERIC" && isValid && pendingCalls.length > 0) {
+          pendingCalls.shift();
+        }
+      },
+    },
+  );
 
   if (!result.hasContent) {
     return null;
@@ -686,18 +800,6 @@ export function readFactLedger(transcriptPath, cwd = "", gitRoot = "") {
   return createEmptyLedger(false);
 }
 
-function unquoteGitPath(rawPath) {
-  const trimmed = rawPath.trim();
-  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      return trimmed.slice(1, -1);
-    }
-  }
-  return trimmed;
-}
-
 export function readGitLedger(cwd) {
   if (typeof cwd !== "string" || cwd.trim().length === 0) {
     return { gitAvailable: false, gitRoot: null, gitDirtyFiles: new Set() };
@@ -713,7 +815,7 @@ export function readGitLedger(cwd) {
       return { gitAvailable: false, gitRoot: null, gitDirtyFiles: new Set() };
     }
 
-    const statusOut = execFileSync("git", ["status", "--porcelain=v1", "-uall"], {
+    const statusOut = execFileSync("git", ["-c", "core.quotepath=false", "status", "--porcelain=v1", "-uall", "-z"], {
       cwd: gitRoot,
       timeout: GIT_TIMEOUT_MS,
       encoding: "utf8",
@@ -721,21 +823,24 @@ export function readGitLedger(cwd) {
     });
 
     const gitDirtyFiles = new Set();
-    for (const rawLine of statusOut.split("\n")) {
-      const line = rawLine.replace(/\r$/, "");
-      if (line.length < 4) {
+    const tokens = statusOut.split("\0");
+    for (let i = 0; i < tokens.length; i += 1) {
+      const entry = tokens[i];
+      if (entry.length < 4) {
         continue;
       }
-      const payload = line.slice(3);
-      const renameSep = payload.indexOf(" -> ");
-      if (renameSep !== -1) {
-        const oldPath = normalizeWorkspacePath(unquoteGitPath(payload.slice(0, renameSep)), gitRoot, gitRoot);
-        const newPath = normalizeWorkspacePath(unquoteGitPath(payload.slice(renameSep + 4)), gitRoot, gitRoot);
-        if (oldPath) gitDirtyFiles.add(oldPath);
-        if (newPath) gitDirtyFiles.add(newPath);
-      } else {
-        const filePath = normalizeWorkspacePath(unquoteGitPath(payload), gitRoot, gitRoot);
-        if (filePath) gitDirtyFiles.add(filePath);
+      const x = entry[0];
+      const y = entry[1];
+      const path1 = normalizeWorkspacePath(entry.slice(3), gitRoot, gitRoot);
+      if (path1) {
+        gitDirtyFiles.add(path1);
+      }
+      if (x === "R" || x === "C" || y === "R" || y === "C") {
+        i += 1;
+        const oldPath = i < tokens.length ? normalizeWorkspacePath(tokens[i], gitRoot, gitRoot) : "";
+        if (oldPath) {
+          gitDirtyFiles.add(oldPath);
+        }
       }
     }
 
@@ -759,7 +864,6 @@ function scanTestInfraDir(dir, indicators) {
         indicators.add("package.json:scripts.test");
       }
     } catch {
-      // ignore malformed package.json
     }
   }
 
@@ -782,7 +886,6 @@ function scanTestInfraDir(dir, indicators) {
       }
     }
   } catch {
-    // ignore unreadable directory
   }
 }
 

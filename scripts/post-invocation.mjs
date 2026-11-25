@@ -7,7 +7,7 @@ import { decideHookAction } from "./transcript.mjs";
 
 export { readTranscriptSteps };
 
-function logPostInvocationTelemetry(context, decision) {
+function tryLogPostInvocationTelemetry(context, decision) {
   try {
     const { payload, transcriptPath, steps } = context;
     const rawConversationId = payload.conversationId ?? payload.conversation_id;
@@ -30,7 +30,6 @@ function logPostInvocationTelemetry(context, decision) {
       },
     });
   } catch {
-    // Non-blocking telemetry must never interfere with PostInvocation output.
   }
 }
 
@@ -46,7 +45,7 @@ export function handlePostInvocation(stdinText, readTextFile) {
   const decision = decideHookAction(steps, options);
 
   if (typeof readTextFile !== "function") {
-    logPostInvocationTelemetry(context, decision);
+    tryLogPostInvocationTelemetry(context, decision);
   }
 
   if (decision.action !== "inject") {

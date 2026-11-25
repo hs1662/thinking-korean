@@ -171,7 +171,7 @@ export function createMcpServerHandler(options = {}) {
     const transcriptPath = typeof sessionObj?.transcriptPath === "string" ? sessionObj.transcriptPath.trim() : "";
     const cwd = typeof sessionObj?.cwd === "string" ? sessionObj.cwd.trim() : "";
 
-    if (!sessionObj || transcriptPath.length === 0) {
+    const skipNoSession = () => {
       const decision = decideGate(publicArgs, { sessionMissing: true, register: schemaRegister });
       appendAuditRecord(
         {
@@ -197,10 +197,17 @@ export function createMcpServerHandler(options = {}) {
         content: [{ type: "text", text: decision.receiptText }],
         isError: false,
       };
+    };
+
+    if (!sessionObj || transcriptPath.length === 0) {
+      return skipNoSession();
     }
 
     const gitLedger = readGitLedger(cwd);
     const ledger = readFactLedger(transcriptPath, cwd, gitLedger.gitRoot || "");
+    if (!ledger.transcriptAvailable) {
+      return skipNoSession();
+    }
     const testInfra = detectTestInfrastructure(cwd, gitLedger.gitRoot || null);
     const decision = decideGate(publicArgs, {
       ledger,
@@ -289,8 +296,24 @@ export function createMcpServerHandler(options = {}) {
       try {
         return makeRpcResult(id, handleVerifyCompletion(params?.arguments));
       } catch (err) {
-        process.stderr.write(`[hstack-gate] verify_completion error: ${err?.message ?? String(err)}\n`);
+        const errorMessage = err?.message ?? String(err);
+        process.stderr.write(`[hstack-gate] verify_completion error: ${errorMessage}\n`);
         const fallback = decideGate({}, { sessionMissing: true, register: schemaRegister });
+        appendAuditRecord(
+          {
+            ts: new Date().toISOString(),
+            event: "gate_verify",
+            conversationId: "",
+            turnStartStepIndex: 0,
+            attemptInTurn: 1,
+            schemaRegister,
+            verdict: "SKIPPED_NO_SESSION",
+            blockedRules: fallback.blockedRules,
+            warnedRules: fallback.warnedRules,
+            error: errorMessage,
+          },
+          dataDir,
+        );
         return makeRpcResult(id, {
           content: [{ type: "text", text: fallback.receiptText }],
           isError: false,

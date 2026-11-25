@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { describe, it } from "node:test";
 
-import { GATE_BLOCK_MARKER, GATE_TOOL_NAME, VERDICT_HEADERS, isExemptDocOrAssetPath } from "../scripts/governance/constants.mjs";
+import { GATE_TOOL_NAME, VERDICT_HEADERS, isExemptDocOrAssetPath } from "../scripts/governance/constants.mjs";
 import {
   classifyCommand,
   detectTestInfrastructure,
@@ -16,6 +16,7 @@ import {
   readGitLedger,
 } from "../scripts/governance/fact-ledger.mjs";
 import { resolvePluginDataDir, streamTranscriptRecords } from "../scripts/hook-io.mjs";
+import { GATE_STOP_MARKER } from "../scripts/transcript/markers.mjs";
 import { createTempDir, toJsonl } from "./helpers.mjs";
 
 function runGit(cwd, args) {
@@ -277,7 +278,7 @@ describe("readFactLedger performance and turn semantics", () => {
           status: "DONE",
           content: `A pre-tool hook changed the arguments.\n${VERDICT_HEADERS.REJECT_NEUTRAL}\n사유`,
         },
-        { step_index: 12, type: "SYSTEM_MESSAGE", content: `${GATE_BLOCK_MARKER} 검증을 실행하세요.` },
+        { step_index: 12, type: "SYSTEM_MESSAGE", content: `${GATE_STOP_MARKER} 검증을 실행하세요.` },
       ]),
       "utf8",
     );

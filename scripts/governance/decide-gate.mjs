@@ -1,16 +1,74 @@
 import { ALLOWED_SCHEMA_REGISTERS, PASSING_VERDICTS, REGISTER_COPY } from "./constants.mjs";
-import { normalizeWorkspacePath } from "./fact-ledger.mjs";
+import { classifyCommand, normalizeWorkspacePath, splitShellSegments } from "./fact-ledger.mjs";
 import { detectHedges } from "./hedge-detector.mjs";
+
+const BARE_RUNTIME_LAUNCHERS = new Set([
+  "node",
+  "npm",
+  "npx",
+  "pnpm",
+  "yarn",
+  "python",
+  "python3",
+  "cargo",
+  "go",
+  "sh",
+  "bash",
+  "agy",
+  "bun",
+  "deno",
+]);
 
 function normalizeCommandText(cmd) {
   return typeof cmd === "string" ? cmd.trim().replace(/\s+/g, " ") : "";
 }
 
-function isCommandResolvedBy(failedNorm, passedNorm) {
+function isBareRuntimeLauncher(normCmd) {
+  return !normCmd.includes(" ") && BARE_RUNTIME_LAUNCHERS.has(normCmd);
+}
+
+function extractVerificationSegments(cmd) {
+  if (typeof cmd !== "string" || cmd.trim().length === 0) {
+    return [];
+  }
+  const segments = [];
+  for (const seg of splitShellSegments(cmd)) {
+    const norm = normalizeCommandText(seg);
+    if (norm.length > 0 && classifyCommand(norm) === "verification") {
+      segments.push(norm);
+    }
+  }
+  return segments;
+}
+
+function segmentResolvedBy(failedSeg, passedSeg) {
+  if (failedSeg.length === 0 || passedSeg.length === 0) {
+    return false;
+  }
+  if (failedSeg === passedSeg) {
+    return true;
+  }
+  if (isBareRuntimeLauncher(passedSeg)) {
+    return false;
+  }
+  return failedSeg.startsWith(`${passedSeg} `);
+}
+
+function isCommandResolvedBy(failedCmd, passedCmd) {
+  const failedNorm = normalizeCommandText(failedCmd);
+  const passedNorm = normalizeCommandText(passedCmd);
   if (failedNorm.length === 0 || passedNorm.length === 0) {
     return false;
   }
-  return failedNorm === passedNorm || failedNorm.startsWith(`${passedNorm} `);
+  if (segmentResolvedBy(failedNorm, passedNorm)) {
+    return true;
+  }
+  const failedSegments = extractVerificationSegments(failedCmd);
+  const passedSegments = extractVerificationSegments(passedCmd);
+  if (failedSegments.length === 0 || passedSegments.length === 0) {
+    return false;
+  }
+  return failedSegments.every((failedSeg) => passedSegments.some((passedSeg) => segmentResolvedBy(failedSeg, passedSeg)));
 }
 
 function normalizePathList(items, cwd, gitRoot) {
@@ -100,7 +158,20 @@ function commandMatchesExecution(normClaim, execCommand) {
   if (normClaim.length === 0 || normExec.length === 0) {
     return false;
   }
-  return normExec.includes(normClaim) || normClaim.includes(normExec);
+  if (normExec === normClaim) {
+    return true;
+  }
+  const allowPrefixMatch = !isBareRuntimeLauncher(normClaim);
+  const execSegments = splitShellSegments(execCommand).map(normalizeCommandText).filter(Boolean);
+  for (const seg of execSegments) {
+    if (seg === normClaim) {
+      return true;
+    }
+    if (allowPrefixMatch && seg.startsWith(`${normClaim} `)) {
+      return true;
+    }
+  }
+  return allowPrefixMatch && normExec.startsWith(`${normClaim} `);
 }
 
 export function decideGate(input = {}, context = {}) {
@@ -190,15 +261,13 @@ export function decideGate(input = {}, context = {}) {
       if (exec.passed) {
         continue;
       }
-      const normA = normalizeCommandText(exec.command);
       let resolvedByLaterPass = false;
       for (let j = i + 1; j < postWriteVerifications.length; j += 1) {
         const later = postWriteVerifications[j];
         if (!later.passed) {
           continue;
         }
-        const normB = normalizeCommandText(later.command);
-        if (isCommandResolvedBy(normA, normB)) {
+        if (isCommandResolvedBy(exec.command, later.command)) {
           resolvedByLaterPass = true;
           break;
         }
@@ -243,9 +312,16 @@ export function decideGate(input = {}, context = {}) {
       continue;
     }
     const normClaim = normalizeCommandText(run.command);
-    const matched =
-      normClaim.length > 0 && postWriteExecutions.some((exec) => commandMatchesExecution(normClaim, exec.command));
-    if (!matched) {
+    const matchingExecs =
+      normClaim.length > 0
+        ? postWriteExecutions.filter((exec) => exec.kind !== "read_only" && commandMatchesExecution(normClaim, exec.command))
+        : [];
+    const matchedPass = matchingExecs.some((exec) => exec.passed === true);
+    const coveredByR3Failure =
+      hasCodeWrite &&
+      blockedRules.includes("R3_CONCEALED_FAILURE") &&
+      matchingExecs.some((exec) => exec.kind === "verification" && !exec.passed);
+    if (!matchedPass && !coveredByR3Failure) {
       details.fabricatedCommands.push(run.command || "(비어 있는 명령)");
     }
   }

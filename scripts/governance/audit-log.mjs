@@ -17,7 +17,6 @@ export function resolveSchemaRegister(dataDir = resolvePluginDataDir()) {
       return configVal;
     }
   } catch {
-    // fall through to default
   }
 
   return "neutral";

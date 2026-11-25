@@ -12,24 +12,7 @@ const DUAL_VIOLATION_REASON = `${GATE_STOP_MARKER} ${DRIFT_MARKER}[대상:응답
 
 const GATE_ONLY_REASON = `${GATE_STOP_MARKER} 이번 턴에서 파일을 수정했으나 수정 이후 완료 검증 도구를 통과한 기록이 없다. 지금 즉시 내장 완료 검증 도구를 호출해 수정 파일과 검증 실행 결과를 대조받아 통과한 뒤 최종 보고를 작성하라.`;
 
-function hasGateBlockMarkerInCurrentTurn(steps) {
-  let sawMarker = false;
-  for (const step of steps) {
-    if (!step || typeof step !== "object") {
-      continue;
-    }
-    if (step.type === "USER_INPUT") {
-      sawMarker = false;
-      continue;
-    }
-    if (step.type === "SYSTEM_MESSAGE" && typeof step.content === "string" && step.content.includes(GATE_STOP_MARKER)) {
-      sawMarker = true;
-    }
-  }
-  return sawMarker;
-}
-
-function logStopTelemetry(payload, info) {
+function tryLogStopTelemetry(payload, info) {
   try {
     const rawConversationId = payload.conversationId ?? payload.conversation_id;
     const conversationId = typeof rawConversationId === "string" ? rawConversationId.trim() : "";
@@ -44,7 +27,6 @@ function logStopTelemetry(payload, info) {
       executionNum: info.executionNum,
     });
   } catch {
-    // Non-blocking telemetry must never affect Stop hook output.
   }
 }
 
@@ -64,7 +46,7 @@ export function handleStop(stdinText, readTextFile) {
   const executionNum = Number(payload.executionNum ?? payload.execution_num ?? 0);
   if (Number.isFinite(executionNum) && executionNum >= GLOBAL_STOP_EXECUTION_CAP) {
     if (typeof readTextFile !== "function") {
-      logStopTelemetry(payload, {
+      tryLogStopTelemetry(payload, {
         decision: "allow_cap",
         gateViolation: false,
         gateBlockedThisTurn: false,
@@ -82,7 +64,7 @@ export function handleStop(stdinText, readTextFile) {
     ledger = readFactLedger(transcriptPath, cwd, gitLedger.gitRoot || "");
   }
 
-  const gateBlockedThisTurn = Boolean(ledger?.gateBlockedThisTurn) || hasGateBlockMarkerInCurrentTurn(steps);
+  const gateBlockedThisTurn = Boolean(ledger?.gateBlockedThisTurn);
   const hasPassingPostWriteGate = Boolean(
     ledger &&
       ledger.turnGateAttempts.some(
@@ -122,7 +104,7 @@ export function handleStop(stdinText, readTextFile) {
   }
 
   if (typeof readTextFile !== "function" && result.decision === "continue") {
-    logStopTelemetry(payload, {
+    tryLogStopTelemetry(payload, {
       decision: telemetryDecision,
       gateViolation,
       gateBlockedThisTurn,
