@@ -817,4 +817,15 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
+
+  it("scans escaped-quote lines with no closing quote in linear time without quadratic DOUBLE_QUOTED_RE rescans", () => {
+    const escapedQuotes = '\\"'.repeat(30_000);
+    const sample = `오류 "Error: Unexpected token" 인용구와 직렬화된 이스케이프 페이로드 ${escapedQuotes} 를 한국어 문장으로 상세하게 확인하고 검증한다.`;
+    const startMs = performance.now();
+    const analysis = analyzeField("content", sample);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.equal(analysis.status, "korean");
+  });
 });
