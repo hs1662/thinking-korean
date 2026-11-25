@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { decideHookAction, isExplicitEnglishOutputRequest } from "../scripts/transcript.mjs";
+import { decideHookAction, decideStopAction, isExplicitEnglishOutputRequest } from "../scripts/transcript.mjs";
 import { makeStep } from "./helpers.mjs";
 
 describe("explicit English output requests", () => {
@@ -183,5 +183,49 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     ]) {
       assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
     }
+  });
+
+  it("exempts 옮기다 conjugations, 영작 requests, noun-colon labels, and bare 'in English'", () => {
+    for (const input of [
+      "아래 내용을 영어로 옮겨줘",
+      "이 문단을 영어로 옮겨 주세요",
+      "다음 문장을 영어로 옮기세요",
+      "아래 문장을 영작해 줘",
+      "이 내용을 자연스럽게 영작해 주세요",
+      "영어로 영작해 줘",
+      "영작 부탁드립니다",
+      "영어로 번역: 오늘 회의는 취소되었습니다.",
+      "영어로 번역:\n오늘 회의는 취소되었습니다.",
+      "영문 번역: 오늘 회의는 취소되었습니다.",
+      "영어 번역: 오늘 회의는 취소되었습니다.",
+      "영어로 요약: 아래 기사를 세 줄로 줄여 주세요.",
+      "영작: 오늘 회의는 취소되었습니다.",
+      "in English",
+      "In English.",
+    ]) {
+      assert.equal(isExplicitEnglishOutputRequest(input), true, `Expected true for: ${input}`);
+    }
+
+    for (const input of [
+      "영어로 옮기지 마",
+      "영어로 옮기지 말고 한국어로 답해 줘",
+      "영작하지 마",
+      "영작된 문장을 한국어로 설명해 줘",
+    ]) {
+      assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
+    }
+
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n아래 내용을 영어로 옮겨줘\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 사용자가 요청한 문장을 자연스러운 영어로 번역하자.",
+        content: "The meeting scheduled for today has been cancelled.",
+      }),
+    ];
+    assert.deepEqual(decideHookAction(steps), { action: "noop", reason: "ok" });
+    assert.deepEqual(decideStopAction(steps, { terminationReason: "NO_TOOL_CALL" }), {
+      action: "noop",
+      reason: "content_exempt",
+    });
   });
 });
