@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { analyzeField } from "../scripts/analyzer.mjs";
 import { appendAuditRecord, resolveSchemaRegister } from "../scripts/governance/audit-log.mjs";
 import { REGISTER_COPY, VERDICT_HEADERS } from "../scripts/governance/constants.mjs";
-import { decideGate } from "../scripts/governance/decide-gate.mjs";
+import { decideGate, isFillerUnverifiedEntry } from "../scripts/governance/decide-gate.mjs";
 import { detectHedges } from "../scripts/governance/hedge-detector.mjs";
 import { createTempDir } from "./helpers.mjs";
 
@@ -672,5 +672,163 @@ describe("audit regression tests (decideGate R3 and R5)", () => {
     );
     assert.equal(cdPrefixedResolves.verdict, "PASS");
     assert.deepEqual(cdPrefixedResolves.blockedRules, []);
+  });
+});
+
+describe("Patch A: unverified_scope filler normalization, metrics, and audit copy", () => {
+  it("classifies empty/filler declarations accurately without false positives on substantive Korean entries", () => {
+    const fillers = [
+      "",
+      "   ",
+      null,
+      undefined,
+      "없음",
+      "없음.",
+      "없음!",
+      "없습니다",
+      "없어요.",
+      "없음 (모든 수정 파일에 대해 단위 테스트 및 CLI 직접 실행 검증을 완료함)",
+      "없음 (모든 수정 파일에 대해 단위 테스트 완료)",
+      "해당 없음",
+      "해당없음",
+      "해당 사항 없음",
+      "해당사항 없음",
+      "특이 사항 없음",
+      "특이사항 없음",
+      "누락 없음",
+      "누락된 항목 없음",
+      "제외 항목 없음",
+      "제외항목 없음",
+      "미검증 항목 없음",
+      "미검증 범위 없음",
+      "별도 없음",
+      "별도 제한 없음",
+      "추가 없음",
+      "none",
+      "None.",
+      "N/A",
+      "n/a (not applicable)",
+      "na",
+      "nil",
+      "null",
+      "nothing",
+      "no gaps",
+      "no issues",
+    ];
+    for (const entry of fillers) {
+      assert.equal(isFillerUnverifiedEntry(entry), true, `expected filler: ${JSON.stringify(entry)}`);
+    }
+
+    const substantive = [
+      "권한 없음(403) 분기 미검증",
+      "권한 없음(403) 응답 분기 미검증",
+      "없음 상태 폴백 로직 미확인",
+      "없음 상태 폴백 미확인",
+      "해당 없음 분기 처리 미검증",
+      "실제 운영 환경 연동은 미검증",
+      "Windows 경로 호환성 미확인",
+    ];
+    for (const entry of substantive) {
+      assert.equal(isFillerUnverifiedEntry(entry), false, `expected substantive: ${JSON.stringify(entry)}`);
+    }
+  });
+
+  it("excludes filler unverified_scope entries from E2, E7, R7 and exposes counts in metrics", () => {
+    const e2Blocked = decideGate(
+      makeInput({
+        verification_runs: [{ command: "N/A", outcome: "not_applicable", reason_if_na: "테스트 스위트 없음" }],
+        unverified_scope: ["없음 (모든 변경을 육안 확인함)", "해당 없음"],
+      }),
+      {
+        ledger: makeLedger({ turnExecutions: [] }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: false, indicators: [] },
+      },
+    );
+    assert.equal(e2Blocked.verdict, "REJECT");
+    assert.deepEqual(e2Blocked.blockedRules, ["R2_STALE_VERIFICATION"]);
+    assert.equal(e2Blocked.metrics.unverifiedScopeCount, 0);
+    assert.equal(e2Blocked.metrics.fillerUnverifiedCount, 2);
+
+    const e2AllowedWithSubstantive = decideGate(
+      makeInput({
+        verification_runs: [{ command: "N/A", outcome: "not_applicable", reason_if_na: "테스트 스위트 없음" }],
+        unverified_scope: ["없음", "권한 없음(403) 응답 분기 미검증"],
+      }),
+      {
+        ledger: makeLedger({ turnExecutions: [] }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: false, indicators: [] },
+      },
+    );
+    assert.equal(e2AllowedWithSubstantive.verdict, "PASS_WITH_WARNING");
+    assert.deepEqual(e2AllowedWithSubstantive.warnedRules, ["R2_STALE_VERIFICATION"]);
+    assert.equal(e2AllowedWithSubstantive.metrics.unverifiedScopeCount, 1);
+    assert.equal(e2AllowedWithSubstantive.metrics.fillerUnverifiedCount, 1);
+
+    const threeRejects = [
+      { stepIndex: 6, verdict: "REJECT", passed: false },
+      { stepIndex: 7, verdict: "REJECT", passed: false },
+      { stepIndex: 8, verdict: "REJECT", passed: false },
+    ];
+    const e7BlockedOnFiller = decideGate(
+      makeInput({
+        verification_runs: [{ command: "node --test", outcome: "fail" }],
+        unverified_scope: ["특이사항 없음", "N/A"],
+      }),
+      {
+        ledger: makeLedger({ turnExecutions: [], turnGateAttempts: threeRejects }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(e7BlockedOnFiller.verdict, "REJECT");
+    assert.equal(e7BlockedOnFiller.metrics.unverifiedScopeCount, 0);
+    assert.equal(e7BlockedOnFiller.metrics.fillerUnverifiedCount, 2);
+
+    const r7WarnedOnFiller = decideGate(
+      makeInput({
+        self_assessment: "아마 정상 작동할 것으로 보입니다.",
+        unverified_scope: ["없음."],
+      }),
+      {
+        ledger: makeLedger(),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(r7WarnedOnFiller.verdict, "PASS_WITH_WARNING");
+    assert.deepEqual(r7WarnedOnFiller.warnedRules, ["R7_HEDGE_DETECTED"]);
+    assert.equal(r7WarnedOnFiller.metrics.unverifiedScopeCount, 0);
+    assert.equal(r7WarnedOnFiller.metrics.fillerUnverifiedCount, 1);
+
+    const r7ClearedOnSubstantive = decideGate(
+      makeInput({
+        self_assessment: "아마 정상 작동할 것으로 보입니다.",
+        unverified_scope: ["없음", "없음 상태 폴백 로직 미확인"],
+      }),
+      {
+        ledger: makeLedger(),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      },
+    );
+    assert.equal(r7ClearedOnSubstantive.verdict, "PASS");
+    assert.equal(r7ClearedOnSubstantive.metrics.unverifiedScopeCount, 1);
+    assert.equal(r7ClearedOnSubstantive.metrics.fillerUnverifiedCount, 1);
+
+    const skippedMetrics = decideGate(
+      makeInput({ unverified_scope: ["없음", "원격 연동 미검증"] }),
+      { sessionMissing: true },
+    );
+    assert.equal(skippedMetrics.verdict, "SKIPPED_NO_SESSION");
+    assert.equal(skippedMetrics.metrics.unverifiedScopeCount, 1);
+    assert.equal(skippedMetrics.metrics.fillerUnverifiedCount, 1);
+  });
+
+  it("refines audit unverified_scope schema guidance in pure Korean", () => {
+    const desc = REGISTER_COPY.audit.paramDescriptions.unverified_scope;
+    assert.ok(desc.includes("빈 배열"));
+    assert.equal(analyzeField("content", desc).status, "korean");
   });
 });

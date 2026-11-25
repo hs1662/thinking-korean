@@ -280,7 +280,7 @@ describe("scripts/mcp/server.mjs stdio JSON-RPC roundtrip", () => {
           modified_files: ["src/app.mjs"],
           inspected_files: ["src/app.mjs"],
           verification_runs: [{ command: "node --test test/app.test.mjs", outcome: "pass" }],
-          unverified_scope: [],
+          unverified_scope: ["없음 (모든 수정 파일 단위 테스트 완료)"],
           self_assessment: "수정 사항과 단위 테스트 통과 결과를 직접 확인했습니다.",
           toolSummary: "증거 기반 완료 검증 실행",
           _session: { conversationId: "conv-mcp-1", transcriptPath, cwd: repoDir },
@@ -333,8 +333,12 @@ describe("scripts/mcp/server.mjs stdio JSON-RPC roundtrip", () => {
     assert.equal(auditLines[1].attemptInTurn, 2);
     assert.equal(auditLines[1].metrics.inputTokens, 5100);
     assert.equal(auditLines[1].metrics.cacheReadTokens, 4000);
+    assert.equal(auditLines[1].metrics.unverifiedScopeCount, 0);
+    assert.equal(auditLines[1].metrics.fillerUnverifiedCount, 1);
 
     assert.equal(auditLines[2].verdict, "SKIPPED_NO_SESSION");
+    assert.equal(auditLines[2].metrics.unverifiedScopeCount, 0);
+    assert.equal(auditLines[2].metrics.fillerUnverifiedCount, 0);
   });
 
   it("honors HSTACK_SCHEMA_REGISTER=audit with [감사 기각] header", async () => {

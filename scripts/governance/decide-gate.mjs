@@ -87,6 +87,20 @@ function normalizePathList(items, cwd, gitRoot) {
   return out;
 }
 
+const FILLER_UNVERIFIED_RE =
+  /^(?:없음|없습니다|없어요|해당\s*없음|해당\s*사항\s*없음|특이\s*사항\s*없음|누락\s*없음|누락된\s*항목\s*없음|제외\s*항목\s*없음|미검증\s*항목\s*없음|미검증\s*범위\s*없음|별도\s*없음|별도\s*제한\s*없음|추가\s*없음|none|n\/a|na|nil|null|nothing|no\s+gaps|no\s+issues)(?:\s*(?:\([^()]*\)|\[[^[\]]*\]))*[.!?,;:~·\s]*$/i;
+
+export function isFillerUnverifiedEntry(entry) {
+  if (typeof entry !== "string") {
+    return true;
+  }
+  const trimmed = entry.trim();
+  if (trimmed.length === 0) {
+    return true;
+  }
+  return FILLER_UNVERIFIED_RE.test(trimmed);
+}
+
 function normalizeStringList(items) {
   if (!Array.isArray(items)) {
     return [];
@@ -192,6 +206,10 @@ export function decideGate(input = {}, context = {}) {
     degradedFromBlockedRules: [],
   };
 
+  const rawUnverifiedScope = normalizeStringList(input.unverified_scope);
+  const effectiveUnverifiedScope = rawUnverifiedScope.filter((entry) => !isFillerUnverifiedEntry(entry));
+  const fillerUnverifiedCount = rawUnverifiedScope.length - effectiveUnverifiedScope.length;
+
   if (context.sessionMissing) {
     const verdict = "SKIPPED_NO_SESSION";
     const receiptText = formatGateReceipt({ verdict, blockedRules: [], warnedRules: [], details, register });
@@ -202,7 +220,12 @@ export function decideGate(input = {}, context = {}) {
       warnedRules: [],
       details,
       receiptText,
-      metrics: { hedgeHits: 0, priorRejects: 0 },
+      metrics: {
+        hedgeHits: 0,
+        priorRejects: 0,
+        unverifiedScopeCount: effectiveUnverifiedScope.length,
+        fillerUnverifiedCount,
+      },
     };
   }
 
@@ -220,7 +243,6 @@ export function decideGate(input = {}, context = {}) {
   const reportedModifiedSet = new Set(reportedModified);
   const reportedInspected = normalizePathList(input.inspected_files, cwd, gitRoot);
   const verificationRuns = normalizeVerificationRuns(input.verification_runs);
-  const unverifiedScope = normalizeStringList(input.unverified_scope);
   const selfAssessment = typeof input.self_assessment === "string" ? input.self_assessment : "";
 
   const blockedRules = [];
@@ -247,7 +269,7 @@ export function decideGate(input = {}, context = {}) {
     const hasValidNaClaim = verificationRuns.some(
       (run) => run.outcome === "not_applicable" && run.reason_if_na.length > 0,
     );
-    if (!testInfra.hasTestSuite && hasValidNaClaim && unverifiedScope.length >= 1) {
+    if (!testInfra.hasTestSuite && hasValidNaClaim && effectiveUnverifiedScope.length >= 1) {
       warnedRules.push("R2_STALE_VERIFICATION");
     } else {
       blockedRules.push("R2_STALE_VERIFICATION");
@@ -345,7 +367,7 @@ export function decideGate(input = {}, context = {}) {
   const hedge = detectHedges(selfAssessment);
   details.hedgeHits = hedge.hedgeHits;
   details.hedgeMatches = hedge.matches;
-  if (hedge.hedgeHits >= 2 && unverifiedScope.length === 0) {
+  if (hedge.hedgeHits >= 2 && effectiveUnverifiedScope.length === 0) {
     warnedRules.push("R7_HEDGE_DETECTED");
   }
 
@@ -354,7 +376,7 @@ export function decideGate(input = {}, context = {}) {
 
   let verdict;
   let finalBlockedRules = blockedRules;
-  if (blockedRules.length > 0 && priorRejects >= 3 && unverifiedScope.length >= 1 && !claimsAnyPass) {
+  if (blockedRules.length > 0 && priorRejects >= 3 && effectiveUnverifiedScope.length >= 1 && !claimsAnyPass) {
     verdict = "PASS_WITH_DEGRADATION";
     details.degradedFromBlockedRules = [...blockedRules];
     finalBlockedRules = [];
@@ -384,6 +406,8 @@ export function decideGate(input = {}, context = {}) {
     metrics: {
       hedgeHits: hedge.hedgeHits,
       priorRejects,
+      unverifiedScopeCount: effectiveUnverifiedScope.length,
+      fillerUnverifiedCount,
     },
   };
 }
