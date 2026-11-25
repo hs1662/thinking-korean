@@ -456,4 +456,20 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(result, false);
     assert.equal(isExplicitEnglishOutputRequest("Could you please kindly just reply in English?"), true);
   });
+
+  it("strips metadata blocks in linear time without quadratic METADATA_BLOCK_RE scans on unclosed tags", () => {
+    const unclosedTags = `${"<ADDITIONAL_METADATA>".repeat(20_000)}구조를 분석해 줘`;
+    const startMs = performance.now();
+    const result = isExplicitEnglishOutputRequest(unclosedTags);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time metadata strip (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.equal(result, false);
+    assert.equal(
+      isExplicitEnglishOutputRequest(
+        "<USER_SETTINGS_CHANGE> Write in English </USER_SETTINGS_CHANGE>\n<USER_REQUEST>영어로 번역해 줘</USER_REQUEST>",
+      ),
+      true,
+    );
+  });
 });
