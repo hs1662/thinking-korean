@@ -148,4 +148,22 @@ describe("regression #3: JSON-stringified tool args in compact transcript.jsonl"
       assert.doesNotThrow(() => decidePreToolUseAction(call, steps));
     }
   });
+
+  it("preserves JSON-object or JSON-array shaped leaf UI strings instead of dropping them during unwrapping", () => {
+    const objectSummaryCall = {
+      name: "run_command",
+      args: { toolSummary: '{"task":"Check git status and run unit tests"}' },
+    };
+    const arrayOptionCall = {
+      name: "ask_question",
+      args: { questions: [{ question: "형식을 고르세요", options: ['["Check status"]', '{"mode":"fast"}'] }] },
+    };
+
+    assert.deepEqual(extractUiTextsFromToolCall(objectSummaryCall), ['{"task":"Check git status and run unit tests"}']);
+    assert.deepEqual(extractUiTextsFromToolCall(arrayOptionCall), [
+      "형식을 고르세요",
+      '["Check status"]',
+      '{"mode":"fast"}',
+    ]);
+  });
 });

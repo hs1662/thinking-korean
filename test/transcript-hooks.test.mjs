@@ -1110,4 +1110,23 @@ describe("regression: simultaneous cap reason and replayTrackers lastUserInput c
     const decision = decideHookAction(steps, { lastUserInput: "Please reply in English." });
     assert.deepEqual(decision, { action: "noop", reason: "cooldown_active" });
   });
+
+  it("still injects ui drift when PreToolUse denied one tool call but a sibling non-denied tool call has English UI text", () => {
+    const englishRunCommand = {
+      name: "run_command",
+      args: { CommandLine: "ls", toolSummary: "List all project files" },
+    };
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: "코드베이스를 점검해 줘" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: koreanThinking,
+        toolCalls: [englishStepsCall, englishRunCommand],
+      }),
+      makeDenialStep(2),
+    ];
+
+    const decision = decideHookAction(steps);
+    assert.equal(decision.action, "inject");
+    assert.deepEqual(decision.driftedFields, ["ui"]);
+  });
 });
