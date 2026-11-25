@@ -167,11 +167,11 @@ function isSourceDescription(intermediate, action) {
   if (!KO_SOURCE_MODIFIER_RE.test(intermediate)) {
     return false;
   }
+  const trimmed = intermediate.trimEnd();
+  const withoutJom = (trimmed.endsWith("좀") ? trimmed.slice(0, -1) : trimmed).trim();
   const resolvedAction =
     action ||
-    (intermediate
-      .replace(/(?:\s*좀)?$/, "")
-      .trim()
+    (withoutJom
       .split(/\s+/)
       .pop() ?? ""
     ).replace(/[을를]$/, "");
