@@ -628,7 +628,35 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "영어로 자꾸 답해",
       "왜 계속 영어로 답해?",
       "영어로 답해?",
+      "영어로 답해..?",
+      "영어로 답해.?",
+      "영어로 답해!?",
+      "영어로 답해?!",
+      "영어로 답해...?!",
+      "영어로 답해.. ?",
+      "영어로 답해…?",
+      "영어로 답해요..?",
+      "영어로 답해요.?",
+      "영어로 답해요!?",
+      "영어로 답변해..?",
+      "영어로 답변해.?",
+      "영어로 답변해!?",
+      "영어로 답하세요..?",
+      "영어로 답하세요.?",
+      "영어로 답하세요!?",
+      "영어로 답하세요…?",
+      "영어로 답변하세요..?",
+      "영어로 답변하세요…?",
+      "답변은 영어로..?",
+      "답변은 영어로.?",
+      "답변은 영어로!?",
+      "답변은 영어로…?",
+      "영어로 답해..? 한국어로 해",
+      "영어로 답해!? 한국어로 해",
       "영어로 말해?",
+      "영어로 말해..?",
+      "영어로 말해.?",
+      "영어로 말해!?",
       "왜 자꾸 영어로 답해? 한국어로 해",
       "영어로 답해. 아니 한국어로 해",
       "한국어로 해",
@@ -638,16 +666,27 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       assert.equal(isExplicitEnglishOutputRequest(prompt), false, `expected Korean for: ${prompt}`);
     }
 
-    const complaintSteps = [
-      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n왜 자꾸 영어로 답해? 한국어로 해\n</USER_REQUEST>" }),
-      makeStep(1, "PLANNER_RESPONSE", {
-        thinking: "먼저 사용자의 불만을 확인하고 답변을 작성하자.",
-        content: "Sorry, I will switch to Korean right away and explain the cause clearly.",
-      }),
-    ];
-    assert.equal(decideHookAction(complaintSteps).action, "inject");
-    assert.deepEqual(decideHookAction(complaintSteps).driftedFields, ["content"]);
-    assert.equal(decideStopAction(complaintSteps, { terminationReason: "NO_TOOL_CALL" }).action, "continue");
+    for (const complaintPrompt of [
+      "왜 자꾸 영어로 답해? 한국어로 해",
+      "영어로 답해..?",
+      "영어로 답해.?",
+      "영어로 답해!?",
+    ]) {
+      const complaintSteps = [
+        makeStep(0, "USER_INPUT", { content: `<USER_REQUEST>\n${complaintPrompt}\n</USER_REQUEST>` }),
+        makeStep(1, "PLANNER_RESPONSE", {
+          thinking: "먼저 사용자의 불만을 확인하고 답변을 작성하자.",
+          content: "Sorry, I will switch to Korean right away and explain the cause clearly.",
+        }),
+      ];
+      assert.equal(decideHookAction(complaintSteps).action, "inject", `expected inject for: ${complaintPrompt}`);
+      assert.deepEqual(decideHookAction(complaintSteps).driftedFields, ["content"]);
+      assert.equal(
+        decideStopAction(complaintSteps, { terminationReason: "NO_TOOL_CALL" }).action,
+        "continue",
+        `expected continue for: ${complaintPrompt}`,
+      );
+    }
 
     const onlyInEnglishSteps = [
       makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n영어로만 대답해\n</USER_REQUEST>" }),
