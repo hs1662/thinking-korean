@@ -247,6 +247,35 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "영어로 옮겨준거 설명해 줘",
       "영어로 옮겨놨던 거 정리해 줘",
       "영어로 옮겨놨던거 정리해 줘",
+      "영어로 옮긴거를 요약해 줘",
+      "영어로 옮긴거도 설명해 줘",
+      "영어로 옮긴것들 정리해 줘",
+      "영어로 옮긴것들을 요약해 줘",
+      "영어로 옮긴것들도 설명해 줘",
+      "영어로 옮겨진거를 설명해 줘",
+      "영어로 옮겨진것들을 요약해 줘",
+      "영어로 옮겼던거를 요약해 줘",
+      "영어로 옮겼던것들 정리해 줘",
+      "영어로 옮겨 놓은거를 요약해 줘",
+      "영어로 옮겨놓은거도 설명해 줘",
+      "영어로 옮겨 둔거를 정리해 줘",
+      "영어로 옮겨둔것들을 설명해 줘",
+      "영어로 옮겨 준거를 설명해 줘",
+      "영어로 옮겨준것들도 요약해 줘",
+      "영어로 옮겨놨던거를 정리해 줘",
+      "영어로 옮겨뒀던것들을 요약해 줘",
+      "영어로 된거를 설명해 줘",
+      "영어로 된거도 요약해 줘",
+      "영어로 된것들 정리해 줘",
+      "영어로 자연스럽게 작성된거를 요약해 줘",
+      "영어로 쓰인거를 설명해 줘",
+      "영어로 쓰여진것들을 요약해 줘",
+      "영어로 적힌거를 정리해 줘",
+      "영어로 나온거도 설명해 줘",
+      "영어로 표시된거를 요약해 줘",
+      "영어로 출력된것들을 정리해 줘",
+      "영어로 되어 있는거를 설명해 줘",
+      "영어로 되어있는것들을 요약해 줘",
     ]) {
       assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
     }
@@ -298,5 +327,16 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(decideHookAction(boundNounParticipleSteps).action, "inject");
     assert.deepEqual(decideHookAction(boundNounParticipleSteps).driftedFields, ["content"]);
     assert.equal(decideStopAction(boundNounParticipleSteps, { terminationReason: "NO_TOOL_CALL" }).action, "continue");
+
+    const boundNounParticleSteps = [
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n영어로 옮긴거를 요약해 줘\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 옮긴 내용을 한국어로 요약하자.",
+        content: "Here is a concise summary of the translated document in English.",
+      }),
+    ];
+    assert.equal(decideHookAction(boundNounParticleSteps).action, "inject");
+    assert.deepEqual(decideHookAction(boundNounParticleSteps).driftedFields, ["content"]);
+    assert.equal(decideStopAction(boundNounParticleSteps, { terminationReason: "NO_TOOL_CALL" }).action, "continue");
   });
 });
