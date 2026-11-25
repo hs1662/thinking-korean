@@ -8,9 +8,11 @@ const METADATA_TAGS = [
 ];
 
 const QUOTE_LINE_RE = /^[ \t]*>.*$/gm;
-const SHORT_ENGLISH_REQUEST_RE = /^(?:(?:in\s+)?english,?\s+please|in\s+english|영어로요?)\s*[.!]*$/i;
+const SHORT_ENGLISH_REQUEST_RE =
+  /^(?:(?:(?:only\s+)?in\s+)?english(?:\s+only)?,?\s+please|(?:only\s+)?in\s+english(?:\s+only)?|english\s+only|영어로(?:만|도|은|는)?요?)\s*[.!]*$/i;
 
 const FOREIGN_LANG_KO = "(?:영어|영문|프랑스어|독일어|스페인어|이탈리아어|포르투갈어|일본어|일어|일문|중국어|중문|외국어)";
+const KO_RO_PARTICLE = "(?:으로|로)(?:만|도|은|는)?";
 const FOREIGN_LANG_EN = "(?:english|french|german|spanish|italian|portuguese|japanese|chinese)";
 const FOREIGN_LANG_TOKEN_RE = new RegExp(`(?:${FOREIGN_LANG_KO}|\\b${FOREIGN_LANG_EN}\\b|영작)`, "gi");
 const LANG_CANONICAL_MAP = new Map([
@@ -46,47 +48,53 @@ const KO_REQUEST_VERB_CONJ =
 const KO_SHORT_VERB_ENDING = "(?:만들어|써|적어|보여|해)\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|라|달라)|해주세요|해줘|해라|부탁(?:해|해요|합니다|드립니다|드려요)?";
 
 const KO_NEGATED_TRANSLATION_RE = new RegExp(
-  `${FOREIGN_LANG_KO}(?:으로|로)?\\s*(?:(?<=\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:번역|영작|작성|답변|대답|답|답장|응답|설명|요약|정리|출력|변환|교정|쓰|적|말|표현|바꾸|옮기|알려\\s*주|알리|보여\\s*주|하)(?:하|해|해서\\s*(?:보여\\s*주|알려\\s*주)|은|는|을|를)?(?:\\s*좀)?\\s*(?:지\\s*(?:말|마|않)|하지\\s*(?:말|마|않)|하면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|말고|금지|대신)` +
+  `${FOREIGN_LANG_KO}(?:${KO_RO_PARTICLE}|만|도|은|는)?\\s*(?:(?<=\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:번역|영작|작성|답변|대답|답|답장|응답|설명|요약|정리|출력|변환|교정|쓰|적|말|표현|바꾸|옮기|알려\\s*주|알리|보여\\s*주|하)(?:하|해|해서\\s*(?:보여\\s*주|알려\\s*주)|은|는|을|를)?(?:\\s*좀)?\\s*(?:지\\s*(?:말|마|않)|하지\\s*(?:말|마|않)|하면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|말고|금지|대신)` +
     `|영작(?:하|해|은|는|을|를)?(?:\\s*좀)?\\s*(?:지\\s*(?:말|마|않)|하지\\s*(?:말|마|않)|하면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|면\\s*안\\s*(?:돼|되|됨|됩니다|돼요)|말고|금지|대신)` +
-    `|${FOREIGN_LANG_KO}(?:으로|로)?\\s*(?:말고|대신|아닌|아니라)`,
+    `|${FOREIGN_LANG_KO}(?:${KO_RO_PARTICLE}|만|도|은|는)?\\s*(?:말고|대신|아닌|아니라)`,
   "g",
 );
 
 const KO_DESCRIPTIVE_OR_COMPLAINT_RE = new RegExp(
-  `${FOREIGN_LANG_KO}(?:으로|로)\\s*(?:번역|영작|작성|답변|대답|답|답장|응답|설명|요약|정리|출력|변환|표현|옮기|옮겨|쓰|적|말|나오|생각|추론|처리|표시|생성)(?:하|해|지|졌)?(?:되어|되|된|되는|됐|했|졌|진|긴|지는|하는\\s*(?:거|것|지|데|중)|하고\\s*있|나오|았|었|잖아|는데|는지)`,
+  `${FOREIGN_LANG_KO}${KO_RO_PARTICLE}\\s*(?:번역|영작|작성|답변|대답|답|답장|응답|설명|요약|정리|출력|변환|표현|옮기|옮겨|쓰|적|말|나오|생각|추론|처리|표시|생성)(?:하|해|지|졌)?(?:되어|되|된|되는|됐|했|졌|진|긴|지는|하는\\s*(?:거|것|지|데|중)|하고\\s*있|나오|았|었|잖아|는데|는지)`,
   "g",
 );
 const DESCRIPTIVE_MASK = " § ";
 
 const KO_REASONING_KOREAN_RE = new RegExp(
-  `(?:내부\\s*)?(?:추론|사고|생각|작업\\s*단계|단계\\s*제목|체크리스트)(?:\\s*과정)?(?:[은는을를이가])?\\s*(?:한국어|한글|국문)로\\s*(?:(?<=\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:(?:작성|유지|진행|출력|처리)\\s*${KO_REQUEST_NOUN_ENDING}|(?:해\\s*(?:줘|줘요|주세요)|해주세요|해줘|해라|하세요|하시오|하십시오))`,
+  `(?:내부\\s*)?(?:추론|사고|생각|작업\\s*단계|단계\\s*제목|체크리스트)(?:\\s*과정)?(?:[은는을를이가도만])?\\s*(?:한국어|한글|국문)로(?:만|도|은|는)?(?:\\s*(?:(?<=\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:(?:작성|유지|진행|출력|처리)\\s*${KO_REQUEST_NOUN_ENDING}|(?:해\\s*(?:줘|줘요|주세요)|해주세요|해줘|해라|하세요|하시오|하십시오|하고(?=,|\\s)|해(?=$|[.!?,;])|해요(?=$|[.!?,;\\s])))|요?(?=$|[.!?,;\\n]))`,
   "g",
 );
 const EN_REASONING_KOREAN_RE =
   /\b(?:keep|do|write|leave)\s+(?:(?:your|the|internal)\s+)?(?:thinking|reasoning|thoughts?|steps?|checklists?)\s+(?:in|into)\s+korean\b/gi;
 
 const KO_KOREAN_OUTPUT_REQUEST_RE = new RegExp(
-  `(?:한국어|한글|국문)로\\s*(?:(?<=\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:(?:요약|분석|설명|작성|정리|번역|출력|답변|대답|응답)\\s*${KO_REQUEST_NOUN_ENDING}|(?:고쳐|말해|답해|답하|써|바꿔|옮겨|옮기|알려|보여)(?:\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|라|달라)|세요|시오|십시오|(?=$|[.!?,])|요(?=$|[.!?,\\s]))|(?:해\\s*(?:줘|줘요|주세요)|해주세요|해줘|해라))`,
+  `(?:한국어|한글|국문)로(?:만|도|은|는)?\\s*(?:(?<=\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:(?:요약|분석|설명|작성|정리|번역|출력|답변|대답|응답)\\s*${KO_REQUEST_NOUN_ENDING}|(?:고쳐|말해|답해|답하|써|바꿔|옮겨|옮기|알려|보여)(?:\\s*(?:줘|줘요|주세요|주실래요|주시겠어요|주시겠습니까|주실\\s*수|줄래|줄래요|줄\\s*수|주십시오|라|달라)|세요|시오|십시오|(?=$|[.!?,])|요(?=$|[.!?,\\s]))|(?:해\\s*(?:줘|줘요|주세요)|해주세요|해줘|해라))` +
+    `|(?<!왜\\s)(?:${KO_REQUEST_NOUN_ACTION}|번역(?:본|문)|요약(?:본|문)|초안)(?:\\s*언어)?(?:[은는도만이가]|[을를]|\\s*:)?\\s*(?:(?<=\\s)(?!(?:한국어|한글|국문)로(?:만|도|은|는)?\\s)(?!왜\\s|자꾸\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:한국어|한글|국문)로(?:만|도|은|는)?(?:요?(?=$|[.!?,;\\n])|\\s*${KO_REQUEST_NOUN_ENDING})`,
 );
 
 const KO_INTERMEDIATE_BLOCKLIST_RE =
   /(?:되어|되는|됐|했|하는|하고|하면|말고|대신|안\s*돼|안\s*되|버그|오류|문제|이슈|현상|원인|한국어|한글|국문)/;
 
 const KO_SOURCE_MODIFIER_RE =
-  /(?:^|\s)(?:된|작성된|작성한|번역된|번역한|쓰인|쓰여진|쓰여\s*있는|쓴|적힌|적혀\s*있는|적은|말한|답한|나온|나오는|나와\s*있는|표시된|출력된|출력한|받은|온|뜨는|뜬|찍힌|찍히는|옮겨진|옮긴|옮겼던|옮겨\s*(?:놓은|둔|준|놨던|뒀던|놓았던|두었던|주었던|줬던)|(?:되어|돼)\s*있는)(?:(?:거|것)(?:들)?(?:[을를이가은는도만]|으로|로)?|걸(?:[로도만])?|건(?:[지도만])?|게(?:[도만])?)?(?:\s|$)/;
+  /(?:^|\s)(?:된|작성된|작성한|번역된|번역한|쓰인|쓰여진|쓰여\s*있는|쓴|적힌|적혀\s*있는|적은|말한|답한|나온|나오는|나와\s*있는|표시된|출력된|출력한|받은|온|뜨는|뜬|찍힌|찍히는|옮겨진|옮긴|옮겼던|옮겨\s*(?:놓은|둔|준|놨던|뒀던|놓았던|두었던|주었던|줬던)|(?:되어|돼)\s*있는)(?:(?:거|것)(?:들)?(?:[을를이가은는도만]|(?:으로|로)(?:만|도|은|는)?)?|걸(?:[로도만])?|건(?:[지도만])?|게(?:[도만])?)?(?:\s|$)/;
 const KO_SOURCE_OBJECT_RE =
   /(?:에러|오류|로그|메시지|문서|파일|글|코드|내용|텍스트|문단|원문|자료|기사|논문|출력|결과|주석|페이지|경고|화면|설명서)/;
 const KO_CONSUME_ACTIONS = new Set(["설명", "요약", "정리"]);
 
 const KO_LANG_RO_REQUEST_RE = new RegExp(
-  `(${FOREIGN_LANG_KO})(?:으로|로)\\s*((?:(?<=\\s)(?!${FOREIGN_LANG_KO}(?:으로|로)\\s)[가-힣A-Za-z0-9,·/_-]{1,32}\\s+){0,4})(?:(${KO_REQUEST_NOUN_ACTION})(?:\\s*[을를])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}|${KO_REQUEST_VERB_CONJ})`,
+  `(${FOREIGN_LANG_KO})${KO_RO_PARTICLE}\\s*((?:(?<=\\s)(?!${FOREIGN_LANG_KO}${KO_RO_PARTICLE}\\s)[가-힣A-Za-z0-9,·/_-]{1,32}\\s+){0,4})(?:(${KO_REQUEST_NOUN_ACTION})(?:\\s*[을를만도은는])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}|${KO_REQUEST_VERB_CONJ})`,
+  "g",
+);
+
+const KO_VERBLESS_RO_REQUEST_RE = new RegExp(
+  `(?<!왜\\s)(?:${KO_REQUEST_NOUN_ACTION}|번역(?:본|문)|요약(?:본|문)|초안)(?:\\s*언어)?(?:[은는도만이가]|[을를]|\\s*:)\\s*((?:(?<=\\s)(?!${FOREIGN_LANG_KO}${KO_RO_PARTICLE}\\s)(?!왜\\s|자꾸\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2})(${FOREIGN_LANG_KO})${KO_RO_PARTICLE}(?:요?(?=$|[,;)])|\\s*${KO_REQUEST_NOUN_ENDING})`,
   "g",
 );
 
 const KO_NOUN_MODIFIER_REQUEST_RE = new RegExp(
-  `(${FOREIGN_LANG_KO})\\s+(?:(?![가-힣A-Za-z0-9·/_-]{0,32}[을를]\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:번역(?:본|문)?|초안|버전|이메일|메일|문장|답장|요약본|요약문)(?:(?:을|를)?\\s*(?:(?:작성|번역|출력|제공|생성)\\s*${KO_REQUEST_NOUN_ENDING}|${KO_SHORT_VERB_ENDING})|\\s*:(?=$|\\s))` +
-    `|(${FOREIGN_LANG_KO})\\s*요약(?:(?:을|를)?\\s*(?:작성|출력)\\s*${KO_REQUEST_NOUN_ENDING}|\\s*:(?=$|\\s))` +
-    `|(영작)(?:\\s*[을를])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}`,
+  `(${FOREIGN_LANG_KO})\\s+(?:(?![가-힣A-Za-z0-9·/_-]{0,32}[을를]\\s)[가-힣A-Za-z0-9·/_-]{1,32}\\s+){0,2}(?:번역(?:본|문)?|초안|버전|이메일|메일|문장|답장|요약본|요약문)(?:(?:을|를|만|도|은|는)?\\s*(?:(?:작성|번역|출력|제공|생성)\\s*${KO_REQUEST_NOUN_ENDING}|${KO_SHORT_VERB_ENDING})|\\s*:(?=$|\\s))` +
+    `|(${FOREIGN_LANG_KO})\\s*요약(?:(?:을|를|만|도|은|는)?\\s*(?:작성|출력)\\s*${KO_REQUEST_NOUN_ENDING}|\\s*:(?=$|\\s))` +
+    `|(영작)(?:\\s*[을를만도은는])?(?:\\s*좀)?\\s*${KO_REQUEST_NOUN_ENDING}`,
   "g",
 );
 
@@ -239,6 +247,16 @@ function collectKoreanEnglishRequestLangs(sentence) {
     const intermediate = (match[2] ?? "").trim();
     if (intermediate.length === 0 || (!KO_INTERMEDIATE_BLOCKLIST_RE.test(intermediate) && !isSourceDescription(intermediate, match[3] ?? ""))) {
       const code = LANG_CANONICAL_MAP.get((match[1] ?? "").toLowerCase());
+      if (code) {
+        langs.add(code);
+      }
+    }
+  }
+
+  for (const match of masked.matchAll(KO_VERBLESS_RO_REQUEST_RE)) {
+    const intermediate = (match[1] ?? "").trim();
+    if (intermediate.length === 0 || (!KO_INTERMEDIATE_BLOCKLIST_RE.test(intermediate) && !KO_SOURCE_MODIFIER_RE.test(intermediate))) {
+      const code = LANG_CANONICAL_MAP.get((match[2] ?? "").toLowerCase());
       if (code) {
         langs.add(code);
       }
