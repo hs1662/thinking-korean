@@ -512,4 +512,19 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(isExplicitEnglishOutputRequest("영어로 자연스럽게 번역하지 마"), false);
     assert.equal(isExplicitEnglishOutputRequest("영어로 번역하고 한국어로 자연스럽게 요약해 줘"), false);
   });
+
+  it("strips trailing 좀 in isSourceDescription in linear time on whitespace-padded source modifiers", () => {
+    const padded = `영어로 된${" ".repeat(60_000)}글 써줘`;
+    const startMs = performance.now();
+    const result = isExplicitEnglishOutputRequest(padded);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(
+      elapsedMs < 50,
+      `expected linear-time source description check (<50ms), took ${elapsedMs.toFixed(1)}ms`,
+    );
+    assert.equal(result, false);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 옮긴 거 요약 좀 해 줘"), false);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 옮긴 거 요약을 좀 해 줘"), false);
+  });
 });
