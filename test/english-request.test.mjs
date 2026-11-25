@@ -472,4 +472,25 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       true,
     );
   });
+
+  it("scans padded Korean request nouns in linear time without quadratic KO_REQUEST_NOUN_ENDING backtracking", () => {
+    for (const prefix of ["영어로 번역", "영작"]) {
+      const padded = `${prefix}${" ".repeat(50_000)}x`;
+      const startMs = performance.now();
+      const result = isExplicitEnglishOutputRequest(padded);
+      const elapsedMs = performance.now() - startMs;
+
+      assert.ok(
+        elapsedMs < 50,
+        `expected linear-time request check for "${prefix}" (<50ms), took ${elapsedMs.toFixed(1)}ms`,
+      );
+      assert.equal(result, false);
+    }
+
+    assert.equal(isExplicitEnglishOutputRequest("영어로 답변 원해"), true);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 답변을 원해"), true);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 요약 부탁해"), true);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 번역: 오늘 회의는 취소되었습니다."), true);
+    assert.equal(isExplicitEnglishOutputRequest("영작: 오늘 회의는 취소되었습니다."), true);
+  });
 });
