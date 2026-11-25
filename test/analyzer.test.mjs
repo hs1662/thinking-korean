@@ -870,7 +870,8 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     const elapsedMs = performance.now() - startMs;
 
     assert.ok(elapsedMs < 50, `expected linear-time UI analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
-    assert.notEqual(analysis.status, "drifted");
+    assert.equal(analysis.status, "drifted");
     assert.equal(analyzeUiTexts(["(Check) [build] status!"]).status, "drifted");
+    assert.notEqual(analyzeUiTexts(["(React) [Router]!"]).status, "drifted");
   });
 });

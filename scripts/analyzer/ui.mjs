@@ -20,7 +20,7 @@ import {
 import { extractNaturalText } from "./stripper.mjs";
 
 const KOREAN_LABEL_PREFIX_RE = /^\s*(?:\d+\s*)?[가-힣]{1,6}(?:\s+[가-힣]{1,4})?(?:\s*\d+)?\s*[:：\-–]\s*/;
-const TOKEN_EDGE_PUNCT_RE = /^[("'“‘[{<]+|[)"'”’\]}>,.;:!?]+$/g;
+const TOKEN_EDGE_PUNCT_RE = /^[("'“‘[{<]+|(?<![)"'”’\]}>,.;:!?])[)"'”’\]}>,.;:!?]+$/g;
 const VERSION_TOKEN_RE = /^v?\d+(?:\.(?:\d+|[xX*]))*\+?$/;
 const ACRONYM_TOKEN_RE = /^[A-Z][A-Z0-9]+s?$/;
 const TITLE_TOKEN_RE = /^[A-Z][A-Za-z0-9]*(?:[.+#-][A-Za-z0-9]+)*[+#]*$/;
