@@ -1,5 +1,17 @@
 {
   "thinking-korean-drift-guard": {
+    "PreToolUse": [
+      {
+        "matcher": "update_steps|ask_question|todo_write|task_create|task_update|update_plan",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./scripts/pre-tool-use.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostInvocation": [
       {
         "type": "command",

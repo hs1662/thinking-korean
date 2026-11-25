@@ -3,7 +3,7 @@
   "name": "thinking-korean",
   "displayName": "Thinking Korean",
   "version": "1.1.0",
-  "description": "Keep model thinking traces and responses in natural conversational Korean from start to finish with an always-on rule and automatic PostInvocation and Stop English-drift recovery.",
+  "description": "Keep model thinking traces, responses, and UI checklist/tool labels in natural conversational Korean with an always-on rule plus PreToolUse, PostInvocation, and Stop English-drift recovery.",
   "logo": "assets/logo.svg",
   "author": {
     "name": "hs1662",

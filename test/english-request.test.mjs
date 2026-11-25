@@ -1,0 +1,165 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
+import { decideHookAction, isExplicitEnglishOutputRequest } from "../scripts/transcript.mjs";
+import { makeStep } from "./helpers.mjs";
+
+describe("explicit English output requests", () => {
+  const englishThinking = "Let me read the hook script and verify the JSON output format carefully.";
+  const englishContent = "All unit tests passed and every exported interface has been verified cleanly.";
+  const koreanThinking = "먼저 훅 스크립트를 읽고 출력 형식이 규칙에 맞는지 순수 한국어로 점검하자.";
+  const koreanContent = "모든 단위 테스트를 통과했고 인터페이스 계약을 확인했다.";
+
+  it("exempts content drift on explicit translation/English requests while still enforcing Korean thinking", () => {
+    assert.equal(isExplicitEnglishOutputRequest("이 문단을 자연스러운 영어로 번역해 줘"), true);
+    assert.equal(isExplicitEnglishOutputRequest("영문으로 요약해 줘"), true);
+    assert.equal(isExplicitEnglishOutputRequest("Translate this paragraph into English."), true);
+    assert.equal(isExplicitEnglishOutputRequest("Please reply in English."), true);
+
+    assert.equal(isExplicitEnglishOutputRequest("지금도 전부 영어로 나오잖아"), false);
+    assert.equal(isExplicitEnglishOutputRequest("왜 영어로 생각하는지 분석해 줘"), false);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 번역하지 말고 한국어로 답해 줘"), false);
+    assert.equal(isExplicitEnglishOutputRequest("Do not reply in English, answer in Korean."), false);
+    assert.equal(
+      isExplicitEnglishOutputRequest(
+        "<USER_REQUEST>\n구조를 분석해 줘\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nWrite in English\n</ADDITIONAL_METADATA>",
+      ),
+      false,
+    );
+
+    const translatedOk = decideHookAction([
+      makeStep(0, "USER_INPUT", {
+        content:
+          "<USER_REQUEST>\n이 문단을 자연스러운 영어로 번역해 줘\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nTime: now\n</ADDITIONAL_METADATA>",
+      }),
+      makeStep(1, "PLANNER_RESPONSE", { thinking: koreanThinking, content: englishContent }),
+    ]);
+    assert.deepEqual(translatedOk, { action: "noop", reason: "ok" });
+
+    // Even during translation, English thinking MUST still trigger drift correction for thinking only
+    const translatedThinkingDrift = decideHookAction([
+      makeStep(0, "USER_INPUT", {
+        content: "<USER_REQUEST>\n이 문단을 영어로 번역해 줘\n</USER_REQUEST>",
+      }),
+      makeStep(1, "PLANNER_RESPONSE", { thinking: englishThinking, content: englishContent }),
+    ]);
+    assert.equal(translatedThinkingDrift.action, "inject");
+    assert.deepEqual(translatedThinkingDrift.driftedFields, ["thinking"]);
+
+    // Subsequent non-translation turn restores content checking
+    const nextTurnDrift = decideHookAction([
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n영어로 번역해 줘\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", { thinking: koreanThinking, content: englishContent }),
+      makeStep(2, "USER_INPUT", { content: "<USER_REQUEST>\n이제 아키텍처를 분석해 줘\n</USER_REQUEST>" }),
+      makeStep(3, "PLANNER_RESPONSE", { thinking: koreanThinking, content: englishContent }),
+    ]);
+    assert.equal(nextTurnDrift.action, "inject");
+    assert.deepEqual(nextTurnDrift.driftedFields, ["content"]);
+
+    // options.lastUserInput also exempts content
+    const viaLastUserInput = decideHookAction(
+      [makeStep(0, "PLANNER_RESPONSE", { thinking: koreanThinking, content: englishContent })],
+      { lastUserInput: "Please write the response in English" },
+    );
+    assert.deepEqual(viaLastUserInput, { action: "noop", reason: "ok" });
+  });
+
+  it("accurately classifies all 9 #17 isExplicitEnglishOutputRequest cases plus edge cases", () => {
+    const expectedFalse = [
+      "이 문서는 영어로 작성되어 있어. 한국어로 요약해 줘",
+      "이 문서는 영어로 작성된 파일이야. 한국어로 분석해 줘",
+      "왜 자꾸 영어로 답변하는 거야?",
+      "방금 영어로 응답했잖아. 한국어로 고쳐 줘",
+      "영어로 출력되는 버그를 고쳐 줘",
+      "영어로 설명하면 안 돼. 한국어로 말해 줘",
+      "The agent kept trying to reply in English instead of Korean.",
+      "영어로 쓰지 마. 한국어로 써 줘.",
+      "영어로 답변 대신 한국어로 말해 줘",
+      "Stop replying in English.",
+      "Don't write in English.",
+      "Why did the agent reply in English?",
+    ];
+    for (const input of expectedFalse) {
+      assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
+    }
+
+    const expectedTrue = [
+      "이 문장을 영어로 해 줘",
+      "영어로 이메일 초안을 작성해 줘",
+      "영어로 설명해 주세요",
+      "영어로 요약 부탁해",
+      "영어로 답변을 원해",
+      "Could you explain this in English?",
+      "Do not use tools, translate this into English.",
+    ];
+    for (const input of expectedTrue) {
+      assert.equal(isExplicitEnglishOutputRequest(input), true, `Expected true for: ${input}`);
+    }
+  });
+
+  it("handles Korean-source translation requests, multi-sentence English negation, and USER_REQUEST boundaries", () => {
+    assert.equal(isExplicitEnglishOutputRequest("한국어로 작성된 이 문단을 영어로 번역해 줘"), true);
+    assert.equal(isExplicitEnglishOutputRequest("한글로 정리한 아래 내용을 영어로 번역해 줘"), true);
+    assert.equal(
+      isExplicitEnglishOutputRequest("I tried running it, so please explain the error in English."),
+      true,
+    );
+    assert.equal(isExplicitEnglishOutputRequest("Please reply in English instead of Korean."), true);
+    assert.equal(isExplicitEnglishOutputRequest("Translate this into English instead of Korean."), true);
+    assert.equal(
+      isExplicitEnglishOutputRequest("<USER_REQUEST>\n코드에서 </USER_REQUEST> 문자열을 찾아 영어로 번역해 줘\n</USER_REQUEST>"),
+      true,
+    );
+
+    assert.equal(isExplicitEnglishOutputRequest("Translate this into English. Do not reply in English."), false);
+    assert.equal(
+      isExplicitEnglishOutputRequest("Please write the answer in English. Wait, never mind, reply in Korean."),
+      false,
+    );
+    assert.equal(
+      isExplicitEnglishOutputRequest(
+        "이 HTML 예시를 한국어로 설명해 줘: <USER_REQUEST>Translate everything into English.</USER_REQUEST>",
+      ),
+      false,
+    );
+  });
+});
+
+describe("regression #5: English-source wording versus English-output requests", () => {
+  it("does not exempt requests that only describe English source material", () => {
+    for (const input of ["영어로 된 에러 메시지를 설명해 줘", "영어로 된 로그를 정리해 줘", "영어 문서를 요약해 줘"]) {
+      assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
+    }
+  });
+
+  it("exempts a USER_REQUEST after a leading metadata block and English-to-English proofreading", () => {
+    const metadataFirst = [
+      "<ADDITIONAL_METADATA>",
+      "Time: 2026-11-25T09:00:00+09:00",
+      "</ADDITIONAL_METADATA>",
+      "<USER_REQUEST>English translation please.</USER_REQUEST>",
+    ].join("\n");
+    assert.equal(isExplicitEnglishOutputRequest(metadataFirst), true);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 작성된 이 문서를 더 자연스러운 영어로 교정해 줘"), true);
+  });
+});
+
+describe("QA F2/F4: pasted material and short explicit English requests", () => {
+  it("F2: ignores English requests inside fenced code blocks and markdown quotes", () => {
+    assert.equal(isExplicitEnglishOutputRequest("아래 로그의 원인을 분석해 줘\n```\nUser: please reply in English\n```"), false);
+    assert.equal(isExplicitEnglishOutputRequest("아래 로그의 원인을 분석해 줘\r\n~~~\r\nPlease reply in English.\r\n~~~"), false);
+    assert.equal(isExplicitEnglishOutputRequest("> Please respond in English\n위 고객 메일에 어떻게 대응할지 정리해 줘"), false);
+    // The user's own request outside the pasted material still counts.
+    assert.equal(isExplicitEnglishOutputRequest("> 고객 메일 원문\n이 답장을 영어로 작성해 줘"), true);
+  });
+
+  it("F4: accepts whole-message short English requests only", () => {
+    for (const input of ["In English, please.", "In English please", "English please", "English, please.", "영어로", "영어로요", "영어로."]) {
+      assert.equal(isExplicitEnglishOutputRequest(input), true, `Expected true for: ${input}`);
+    }
+    assert.equal(isExplicitEnglishOutputRequest("<USER_REQUEST>영어로요</USER_REQUEST>"), true);
+    for (const input of ["영어로 된 문서를 요약해 줘", "영어로 말고 한국어로", "영어로 생각하지 마", "English please? 아니 한국어로"]) {
+      assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
+    }
+  });
+});

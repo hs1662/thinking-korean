@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  readdirSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -18,9 +19,16 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { evaluatePlannerResponse } from "../scripts/analyzer.mjs";
-import * as transcriptMod from "../scripts/transcript.mjs";
-
-const { parseTranscriptJsonl, DRIFT_MARKER } = transcriptMod;
+import {
+  PRE_TOOL_USE_UI_TOOLS,
+  extractUiTextsFromToolCalls,
+  getToolCalls,
+  isPreToolDenialStep,
+  parseDriftMarkerStep,
+  parseTranscriptJsonl,
+} from "../scripts/transcript.mjs";
+import { deniedToolCallIndexes } from "../scripts/transcript/steps.mjs";
+import { isDirectExecution } from "../scripts/hook-io.mjs";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(TEST_DIR, "..");
@@ -29,7 +37,44 @@ export const DEFAULT_TIMEOUT_SECONDS = 180;
 const HARD_KILL_GRACE_MS = 10_000;
 const PLUGIN_ENTRIES = ["plugin.json", "hooks.json", "rules", "scripts", "assets"];
 const AUTH_AND_BUILTIN_ITEMS = ["antigravity-oauth-token", "builtin", "installation_id"];
-const FALLBACK_DRIFT_MARKERS = ["[한국어사고:영어이탈]", "[thinking-korean:drift]"];
+const ANALYZER_MODULE_DIR = join(PLUGIN_ROOT, "scripts", "analyzer");
+const ANALYZE_FIELD_EXPORT_RE = /export\s+function\s+analyzeField\s*\(/;
+const RELATIVE_IMPORT_RE = /(\bfrom\s+["'])\.\/([^"']+)(["'])/g;
+
+// scripts/analyzer.mjs is a re-export facade, so the live sample must be the module that actually defines
+// analyzeField: src/analyzer.mjs = that module, src/analyzer/ = its sibling submodules (imports rewritten).
+function copyAnalyzerSample(workspaceDir) {
+  const sampleDir = join(workspaceDir, "src");
+  const subDir = join(sampleDir, "analyzer");
+  mkdirSync(subDir, { recursive: true });
+
+  const moduleFiles = readdirSync(ANALYZER_MODULE_DIR).filter((file) => file.endsWith(".mjs"));
+  const sources = new Map(moduleFiles.map((file) => [file, readFileSync(join(ANALYZER_MODULE_DIR, file), "utf8")]));
+  const mainFile = moduleFiles.find((file) => ANALYZE_FIELD_EXPORT_RE.test(sources.get(file)));
+  if (!mainFile) {
+    throw new Error(`No module in ${ANALYZER_MODULE_DIR} defines analyzeField`);
+  }
+
+  writeFileSync(
+    join(sampleDir, "analyzer.mjs"),
+    sources.get(mainFile).replace(RELATIVE_IMPORT_RE, (_, head, target, tail) => `${head}./analyzer/${target}${tail}`),
+    "utf8",
+  );
+  for (const file of moduleFiles) {
+    if (file === mainFile) {
+      continue;
+    }
+    writeFileSync(
+      join(subDir, file),
+      sources
+        .get(file)
+        .replace(RELATIVE_IMPORT_RE, (match, head, target, tail) =>
+          target === mainFile ? `${head}../analyzer.mjs${tail}` : match,
+        ),
+      "utf8",
+    );
+  }
+}
 
 const HEAVY_ENGLISH_SKILL_DOC = `---
 name: engineering-discipline
@@ -95,9 +140,7 @@ export const CASES = [
       "src/analyzer.mjs 파일을 직접 읽고 analyzeField의 드리프트 판정 순서와 예외 필터링 로직을 한국어로 분석해 줘.",
     exemptContentDrift: false,
     setupWorkspace(workspaceDir) {
-      const sampleDir = join(workspaceDir, "src");
-      mkdirSync(sampleDir, { recursive: true });
-      cpSync(join(PLUGIN_ROOT, "scripts", "analyzer.mjs"), join(sampleDir, "analyzer.mjs"));
+      copyAnalyzerSample(workspaceDir);
     },
   },
   {
@@ -107,11 +150,9 @@ export const CASES = [
     exemptContentDrift: false,
     setupWorkspace(workspaceDir) {
       const docsDir = join(workspaceDir, "docs");
-      const sampleDir = join(workspaceDir, "src");
       mkdirSync(docsDir, { recursive: true });
-      mkdirSync(sampleDir, { recursive: true });
       writeFileSync(join(docsDir, "SKILL.md"), HEAVY_ENGLISH_SKILL_DOC, "utf8");
-      cpSync(join(PLUGIN_ROOT, "scripts", "analyzer.mjs"), join(sampleDir, "analyzer.mjs"));
+      copyAnalyzerSample(workspaceDir);
     },
   },
   {
@@ -120,6 +161,16 @@ export const CASES = [
       "도구는 호출하지 말고, 아래 한국어 문단을 자연스러운 영어로 번역해 줘. 번역문만 출력해 줘.\n\n분산 시스템에서 재시도 정책을 설계할 때는 지수 백오프와 지터를 함께 적용해 동시 재시도 폭주를 막아야 한다. 또한 모든 쓰기 요청에 멱등성 키를 부여하면 네트워크 타임아웃 뒤 재전송이 발생해도 중복 처리를 안전하게 방지할 수 있다.",
     exemptContentDrift: true,
     setupWorkspace: null,
+  },
+  {
+    name: "todo-checklist",
+    prompt:
+      "먼저 update_steps 도구로 3단계 작업 체크리스트를 등록한 뒤, src/analyzer.mjs 파일을 읽고 핵심 판정 규칙을 한국어로 요약해 줘. 작업 단계 제목과 도구 요약, 추론, 최종 응답 모두 한국어로 작성해 줘.",
+    exemptContentDrift: false,
+    requiredTools: ["update_steps"],
+    setupWorkspace(workspaceDir) {
+      copyAnalyzerSample(workspaceDir);
+    },
   },
 ];
 
@@ -228,7 +279,7 @@ export function parseCliArgs(argv) {
     }
     if (arg === "--timeout") {
       const next = argv[i + 1];
-      if (!next || next.startsWith("-")) {
+      if (!next || (next.startsWith("-") && !/^-\d/.test(next))) {
         throw new Error("Missing value for --timeout");
       }
       timeoutSeconds = parseTimeoutSeconds(next);
@@ -295,75 +346,80 @@ function safeRealpath(pathValue) {
 
 function createIsolatedEnvironment(testCase, pluginManifest) {
   const runRoot = mkdtempSync(join(tmpdir(), "thinking-korean-live-"));
-  const homeDir = join(runRoot, "home");
-  const appDataDir = join(homeDir, ".gemini", "antigravity-cli");
-  const configDir = join(homeDir, ".gemini", "config");
-  const configPluginsDir = join(configDir, "plugins");
-  const workspaceDir = join(runRoot, "workspace");
+  try {
+    const homeDir = join(runRoot, "home");
+    const appDataDir = join(homeDir, ".gemini", "antigravity-cli");
+    const configDir = join(homeDir, ".gemini", "config");
+    const configPluginsDir = join(configDir, "plugins");
+    const workspaceDir = join(runRoot, "workspace");
 
-  mkdirSync(appDataDir, { recursive: true });
-  mkdirSync(configPluginsDir, { recursive: true });
-  mkdirSync(workspaceDir, { recursive: true });
+    mkdirSync(appDataDir, { recursive: true });
+    mkdirSync(configPluginsDir, { recursive: true });
+    mkdirSync(workspaceDir, { recursive: true });
 
-  const sourceAppDataDirs = resolveSourceAppDataDirs();
-  for (const item of AUTH_AND_BUILTIN_ITEMS) {
-    for (const sourceDir of sourceAppDataDirs) {
-      const src = join(sourceDir, item);
-      if (existsSync(src)) {
-        const symlinkType = statSync(src).isDirectory() ? "dir" : "file";
-        symlinkSync(src, join(appDataDir, item), symlinkType);
-        break;
+    const sourceAppDataDirs = resolveSourceAppDataDirs();
+    for (const item of AUTH_AND_BUILTIN_ITEMS) {
+      for (const sourceDir of sourceAppDataDirs) {
+        const src = join(sourceDir, item);
+        if (existsSync(src)) {
+          const symlinkType = statSync(src).isDirectory() ? "dir" : "file";
+          symlinkSync(src, join(appDataDir, item), symlinkType);
+          break;
+        }
       }
     }
-  }
 
-  const trustedWorkspaces = Array.from(
-    new Set([runRoot, safeRealpath(runRoot), workspaceDir, safeRealpath(workspaceDir)]),
-  );
+    const trustedWorkspaces = Array.from(
+      new Set([runRoot, safeRealpath(runRoot), workspaceDir, safeRealpath(workspaceDir)]),
+    );
 
-  writeFileSync(
-    join(appDataDir, "settings.json"),
-    `${JSON.stringify(
-      {
-        allowNonWorkspaceAccess: true,
-        showThinking: true,
-        toolPermission: "always-proceed",
-        trustedWorkspaces,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-  writeFileSync(join(configDir, "config.json"), `${JSON.stringify({ plugins: {} }, null, 2)}\n`, "utf8");
+    writeFileSync(
+      join(appDataDir, "settings.json"),
+      `${JSON.stringify(
+        {
+          allowNonWorkspaceAccess: true,
+          showThinking: true,
+          toolPermission: "always-proceed",
+          trustedWorkspaces,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    writeFileSync(join(configDir, "config.json"), `${JSON.stringify({ plugins: {} }, null, 2)}\n`, "utf8");
 
-  const pluginName = pluginManifest.name || "thinking-korean";
-  const pluginDest = join(configPluginsDir, pluginName);
-  mkdirSync(pluginDest, { recursive: true });
-  for (const entry of PLUGIN_ENTRIES) {
-    const src = join(PLUGIN_ROOT, entry);
-    if (existsSync(src)) {
-      cpSync(src, join(pluginDest, entry), { recursive: true });
+    const pluginName = pluginManifest.name || "thinking-korean";
+    const pluginDest = join(configPluginsDir, pluginName);
+    mkdirSync(pluginDest, { recursive: true });
+    for (const entry of PLUGIN_ENTRIES) {
+      const src = join(PLUGIN_ROOT, entry);
+      if (existsSync(src)) {
+        cpSync(src, join(pluginDest, entry), { recursive: true });
+      }
     }
-  }
 
-  if (typeof testCase.setupWorkspace === "function") {
-    testCase.setupWorkspace(workspaceDir);
-  }
+    if (typeof testCase.setupWorkspace === "function") {
+      testCase.setupWorkspace(workspaceDir);
+    }
 
-  const env = buildIsolatedEnv(homeDir, appDataDir);
-  const gitInit = spawnSync("git", ["init", "-q"], {
-    cwd: workspaceDir,
-    env,
-    encoding: "utf8",
-    timeout: 15_000,
-  });
-  if (gitInit.error || gitInit.status !== 0) {
-    const reason = gitInit.error?.message || (gitInit.stderr || `git init exited with ${gitInit.status}`).trim();
-    throw new Error(`Failed to initialize temp git workspace: ${reason}`);
-  }
+    const env = buildIsolatedEnv(homeDir, appDataDir);
+    const gitInit = spawnSync("git", ["init", "-q"], {
+      cwd: workspaceDir,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    if (gitInit.error || gitInit.status !== 0) {
+      const reason = gitInit.error?.message || (gitInit.stderr || `git init exited with ${gitInit.status}`).trim();
+      throw new Error(`Failed to initialize temp git workspace: ${reason}`);
+    }
 
-  return { runRoot, homeDir, appDataDir, workspaceDir, pluginDest, env };
+    return { runRoot, homeDir, appDataDir, workspaceDir, pluginDest, env };
+  } catch (error) {
+    rmSync(runRoot, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function verifyIsolatedPlugin(workspaceDir, env, pluginDest, pluginManifest) {
@@ -434,18 +490,26 @@ function verifyIsolatedPlugin(workspaceDir, env, pluginDest, pluginManifest) {
     };
   }
 
-  if (!Array.isArray(onlyPlugin.rules) || onlyPlugin.rules.length === 0) {
+  if (pluginManifest.version && onlyPlugin.version !== pluginManifest.version) {
     return {
       ok: false,
-      error: `Plugin "${expectedName}" loaded without any rules`,
+      error: `Plugin version mismatch: expected ${pluginManifest.version}, got ${onlyPlugin.version}`,
       loadedPlugins,
     };
   }
 
-  if (!Array.isArray(onlyPlugin.hooks) || onlyPlugin.hooks.length === 0) {
+  if (!Array.isArray(onlyPlugin.rules) || !onlyPlugin.rules.includes("AGENTS.md")) {
     return {
       ok: false,
-      error: `Plugin "${expectedName}" loaded without any hooks`,
+      error: `Plugin "${expectedName}" loaded without AGENTS.md rule`,
+      loadedPlugins,
+    };
+  }
+
+  if (!Array.isArray(onlyPlugin.hooks) || !onlyPlugin.hooks.includes("thinking-korean-drift-guard")) {
+    return {
+      ok: false,
+      error: `Plugin "${expectedName}" loaded without thinking-korean-drift-guard hook`,
       loadedPlugins,
     };
   }
@@ -489,30 +553,16 @@ function resolveIsolatedTranscriptPath(appDataDir, conversationId) {
   return null;
 }
 
-function isDriftInjectionStep(step) {
-  if (typeof transcriptMod.isDriftMarkerStep === "function") {
-    return transcriptMod.isDriftMarkerStep(step);
+// SYSTEM_MESSAGE drift markers only; PreToolUse denials (GENERIC steps) are counted separately.
+function parseInjectionMarker(step) {
+  if (isPreToolDenialStep(step)) {
+    return null;
   }
-  if (!step || step.type !== "SYSTEM_MESSAGE" || typeof step.content !== "string") {
-    return false;
-  }
-  const markers = new Set([
-    ...(typeof DRIFT_MARKER === "string" && DRIFT_MARKER.length > 0 ? [DRIFT_MARKER] : []),
-    ...(Array.isArray(transcriptMod.LEGACY_DRIFT_MARKERS) ? transcriptMod.LEGACY_DRIFT_MARKERS : []),
-    ...FALLBACK_DRIFT_MARKERS,
-  ]);
-  return [...markers].some((marker) => step.content.includes(marker));
+  return parseDriftMarkerStep(step);
 }
 
-function isContentDriftInjectionStep(step) {
-  if (!isDriftInjectionStep(step) || typeof step.content !== "string") {
-    return false;
-  }
-  return (
-    step.content.includes("최종 응답이") ||
-    step.content.includes("최종 응답도") ||
-    /\bdrifted\b[^.\n]*\bcontent\b|\bcontent\b[^.\n]*\bdrifted\b/i.test(step.content)
-  );
+function callNameOf(call) {
+  return call && typeof call.name === "string" ? call.name : "";
 }
 
 function roundRatio(value) {
@@ -532,26 +582,56 @@ function formatFieldResult(result) {
 
 export function summarizeTranscript(steps, testCase = {}) {
   const exemptContentDrift = Boolean(testCase.exemptContentDrift);
+  const requiredTools = Array.isArray(testCase.requiredTools) ? testCase.requiredTools : [];
+  const requiredToolsExecuted = Object.fromEntries(requiredTools.map((tool) => [tool, false]));
+  const deniedTools = [];
   let driftInjections = 0;
   let contentDriftInjections = 0;
-  let lastDriftInjectionPos = -1;
+  let preToolDenials = 0;
+  let lastCorrectionPos = -1;
   let lastDriftedPlannerPos = -1;
   const plannerSteps = [];
 
   for (let pos = 0; pos < steps.length; pos += 1) {
     const step = steps[pos];
-    if (isDriftInjectionStep(step)) {
+    if (!step || typeof step !== "object") {
+      continue;
+    }
+    if (isPreToolDenialStep(step)) {
+      preToolDenials += 1;
+      lastCorrectionPos = pos;
+      continue;
+    }
+    const marker = parseInjectionMarker(step);
+    if (marker) {
       driftInjections += 1;
-      if (isContentDriftInjectionStep(step)) {
+      if (marker.fields.includes("content")) {
         contentDriftInjections += 1;
       }
-      lastDriftInjectionPos = pos;
+      lastCorrectionPos = pos;
       continue;
     }
     if (step.type !== "PLANNER_RESPONSE") {
       continue;
     }
-    const evaluation = evaluatePlannerResponse(step);
+    const toolCalls = getToolCalls(step);
+    // The k-th tool call's result is the k-th GENERIC after this planner step, so only that call is denied.
+    const deniedIndexes = deniedToolCallIndexes(steps, pos);
+    toolCalls.forEach((call, k) => {
+      const name = callNameOf(call);
+      if (deniedIndexes.has(k)) {
+        if (PRE_TOOL_USE_UI_TOOLS.has(name) && !deniedTools.includes(name)) {
+          deniedTools.push(name);
+        }
+      } else if (Object.hasOwn(requiredToolsExecuted, name)) {
+        requiredToolsExecuted[name] = true;
+      }
+    });
+    const evaluation = evaluatePlannerResponse({
+      thinking: step.thinking,
+      content: step.content,
+      uiTexts: extractUiTextsFromToolCalls(toolCalls),
+    });
     const rawDriftedFields = evaluation.kind === "drifted" ? evaluation.driftedFields : [];
     const effectiveDriftedFields = exemptContentDrift
       ? rawDriftedFields.filter((field) => field !== "content")
@@ -570,9 +650,11 @@ export function summarizeTranscript(steps, testCase = {}) {
       ...(exemptContentDrift ? { contentExempted: true } : {}),
       thinking: formatFieldResult(evaluation.thinking),
       content: formatFieldResult(evaluation.content),
+      ui: formatFieldResult(evaluation.ui),
     });
   }
 
+  const missingRequiredTools = requiredTools.filter((tool) => !requiredToolsExecuted[tool]);
   const koreanThinkingStepCount = plannerSteps.filter((step) => step.thinking.status === "korean").length;
   const driftedStepCount = plannerSteps.filter((step) => step.kind === "drifted").length;
   const thinkingWithNaturalText = plannerSteps.filter((step) => step.thinking.naturalCharCount > 0);
@@ -590,15 +672,23 @@ export function summarizeTranscript(steps, testCase = {}) {
     totalThinkingNaturalChars > 0 ? roundRatio(totalThinkingHangulChars / totalThinkingNaturalChars) : null;
 
   const finalStepKind = plannerSteps.length > 0 ? plannerSteps[plannerSteps.length - 1].kind : null;
-  const hasPostInjectionKoreanRecovery =
-    driftInjections > 0 &&
+  const driftedThinkingEver = plannerSteps.some((step) => step.driftedFields.includes("thinking"));
+  const driftedContentEver = plannerSteps.some((step) => step.driftedFields.includes("content"));
+  const driftedUiEver = plannerSteps.some((step) => step.driftedFields.includes("ui"));
+  // A PreToolUse denial counts as a ui correction: recovery must show Korean UI labels afterwards.
+  const hasKoreanRecovery =
+    (driftInjections > 0 || preToolDenials > 0) &&
     finalStepKind === "ok" &&
     plannerSteps.some(
       (step) =>
-        step._pos > lastDriftInjectionPos &&
+        step._pos > lastCorrectionPos &&
         step._pos > lastDriftedPlannerPos &&
-        step.thinking.status === "korean" &&
-        step.kind === "ok",
+        step.kind === "ok" &&
+        (!driftedThinkingEver || step.thinking.status === "korean") &&
+        (!driftedContentEver || step.content.status === "korean") &&
+        (!driftedUiEver || step.ui.status !== "drifted") &&
+        (preToolDenials === 0 || step.ui.status === "korean") &&
+        (step.thinking.status === "korean" || step.content.status === "korean" || step.ui.status === "korean"),
     );
 
   const hasFalsePositiveContentExemptionInjection =
@@ -624,9 +714,14 @@ export function summarizeTranscript(steps, testCase = {}) {
       contentDriftInjections > 0
         ? `False-positive content drift injection (${contentDriftInjections}) triggered during explicit-translation case`
         : `False-positive drift injection (${driftInjections}) triggered during explicit-translation case`;
+  } else if (missingRequiredTools.length > 0) {
+    status = "error";
+    error = `Required tool(s) not executed without hook denial: ${missingRequiredTools.join(", ")}`;
+  } else if (preToolDenials > 0) {
+    status = hasKoreanRecovery ? "recovered" : "drifted";
   } else if (driftedStepCount === 0) {
     status = koreanThinkingStepCount > 0 ? "pass" : "no_thinking";
-  } else if (hasPostInjectionKoreanRecovery) {
+  } else if (hasKoreanRecovery) {
     status = "recovered";
   } else {
     status = "drifted";
@@ -637,6 +732,8 @@ export function summarizeTranscript(steps, testCase = {}) {
   return {
     status,
     driftInjections,
+    preToolDenials,
+    deniedTools,
     plannerResponseCount: publicPlannerSteps.length,
     koreanThinkingStepCount,
     driftedStepCount,
@@ -645,10 +742,23 @@ export function summarizeTranscript(steps, testCase = {}) {
     totalThinkingHangulChars,
     totalThinkingNaturalChars,
     finalStepKind,
+    ...(requiredTools.length > 0 ? { requiredToolsExecuted, missingRequiredTools } : {}),
     ...(exemptContentDrift ? { contentExemptionPassed, contentDriftInjections } : {}),
     ...(falsePositiveDriftInjection ? { falsePositiveDriftInjection: true } : {}),
     ...(error ? { error } : {}),
     plannerSteps: publicPlannerSteps,
+  };
+}
+
+function makeErrorResult(model, testCase, error, fields = {}) {
+  return {
+    model,
+    case: testCase.name,
+    conversationId: null,
+    exitCode: 1,
+    ...fields,
+    status: "error",
+    error,
   };
 }
 
@@ -657,31 +767,18 @@ function runLiveCase(model, testCase, options, pluginManifest) {
   try {
     isolated = createIsolatedEnvironment(testCase, pluginManifest);
   } catch (error) {
-    return {
-      model,
-      case: testCase.name,
-      conversationId: null,
-      exitCode: 1,
-      status: "error",
-      error: error.message,
-    };
+    return makeErrorResult(model, testCase, error.message);
   }
 
   const { runRoot, appDataDir, workspaceDir, pluginDest, env } = isolated;
   try {
     const pluginCheck = verifyIsolatedPlugin(workspaceDir, env, pluginDest, pluginManifest);
     if (!pluginCheck.ok) {
-      return {
-        model,
-        case: testCase.name,
-        conversationId: null,
-        exitCode: 1,
+      return makeErrorResult(model, testCase, pluginCheck.error, {
         pluginVerified: false,
         loadedPlugins: pluginCheck.loadedPlugins,
-        status: "error",
-        error: pluginCheck.error,
         ...(options.keepLogs ? { runDir: runRoot } : {}),
-      };
+      });
     }
 
     const startedAt = Date.now();
@@ -710,56 +807,39 @@ function runLiveCase(model, testCase, options, pluginManifest) {
 
     const exitCode = proc.status ?? 1;
     const conversationId = extractConversationId(proc.stdout || "");
-    const keptFields = options.keepLogs ? { runDir: runRoot } : {};
+    const runFields = {
+      exitCode,
+      elapsedMs,
+      pluginVerified: true,
+      loadedPlugins: pluginCheck.loadedPlugins,
+      ...(options.keepLogs ? { runDir: runRoot } : {}),
+    };
 
     if (proc.error) {
       const errorMessage =
         proc.error.code === "ETIMEDOUT"
           ? `agy timed out after ${options.timeoutSeconds}s`
           : proc.error.message;
-      return {
-        model,
-        case: testCase.name,
-        conversationId,
-        exitCode,
-        elapsedMs,
-        pluginVerified: true,
-        loadedPlugins: pluginCheck.loadedPlugins,
-        status: "error",
-        error: errorMessage,
-        ...keptFields,
-      };
+      return makeErrorResult(model, testCase, errorMessage, { conversationId, ...runFields });
     }
 
     if (!conversationId) {
-      return {
+      return makeErrorResult(
         model,
-        case: testCase.name,
-        conversationId: null,
-        exitCode,
-        elapsedMs,
-        pluginVerified: true,
-        loadedPlugins: pluginCheck.loadedPlugins,
-        status: "error",
-        error: (proc.stderr || "No conversation_id found in agy stream-json output").trim(),
-        ...keptFields,
-      };
+        testCase,
+        (proc.stderr || "No conversation_id found in agy stream-json output").trim(),
+        runFields,
+      );
     }
 
     const transcriptPath = resolveIsolatedTranscriptPath(appDataDir, conversationId);
     if (!transcriptPath) {
-      return {
+      return makeErrorResult(
         model,
-        case: testCase.name,
-        conversationId,
-        exitCode,
-        elapsedMs,
-        pluginVerified: true,
-        loadedPlugins: pluginCheck.loadedPlugins,
-        status: "error",
-        error: `Transcript not found in isolated appDataDir for conversation ${conversationId}`,
-        ...keptFields,
-      };
+        testCase,
+        `Transcript not found in isolated appDataDir for conversation ${conversationId}`,
+        { conversationId, ...runFields },
+      );
     }
 
     const rawTranscript = readFileSync(transcriptPath, "utf8");
@@ -789,17 +869,6 @@ function runLiveCase(model, testCase, options, pluginManifest) {
     if (!options.keepLogs) {
       rmSync(runRoot, { recursive: true, force: true });
     }
-  }
-}
-
-function isDirectExecution() {
-  if (!process.argv[1]) {
-    return false;
-  }
-  try {
-    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(process.argv[1]));
-  } catch {
-    return fileURLToPath(import.meta.url) === resolve(process.argv[1]);
   }
 }
 
@@ -851,6 +920,6 @@ function main() {
   }
 }
 
-if (isDirectExecution() && !process.env.NODE_TEST_CONTEXT) {
+if (isDirectExecution(import.meta.url) && !process.env.NODE_TEST_CONTEXT) {
   main();
 }
