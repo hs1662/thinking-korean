@@ -75,7 +75,6 @@ describe("transcript reducer", () => {
       true,
     );
 
-    // Spoofing attempts that MUST be rejected
     assert.equal(
       isDriftMarkerStep(
         makeStep(0, "SYSTEM_MESSAGE", {
@@ -110,7 +109,6 @@ describe("transcript reducer", () => {
     assert.equal(isDriftMarkerStep({ stepIndex: 0, type: "SYSTEM_MESSAGE" }), false);
     assert.equal(isDriftMarkerStep(null), false);
 
-    // End-to-end spoofing check inside decideHookAction
     const decision = decideHookAction([
       makeStep(0, "PLANNER_RESPONSE", { thinking: englishThinking }),
       makeStep(1, "SYSTEM_MESSAGE", {
@@ -156,7 +154,6 @@ describe("transcript reducer", () => {
     assert.equal(afterThree.stepIndex, 4);
     assert.deepEqual(afterThree.driftedFields, ["thinking"]);
 
-    // After second failed injection, thinking hits MAX_CONSECUTIVE_FAILED_THINKING (2) and stops polluting context
     const cappedSteps = [
       makeStep(0, "PLANNER_RESPONSE", { thinking: englishThinking }),
       makeStep(1, "SYSTEM_MESSAGE", { content: wrappedMarker }),
@@ -187,7 +184,6 @@ describe("transcript reducer", () => {
       makeStep(9, "PLANNER_RESPONSE", { thinking: englishThinking }),
     ];
 
-    // After 2nd failed injection with base cooldown 2, exponential cooldown is 4 responses
     assert.deepEqual(decideHookAction(steps, { maxConsecutiveFailedThinking: 3 }), {
       action: "noop",
       reason: "cooldown_active",
@@ -211,7 +207,6 @@ describe("transcript reducer", () => {
     ]);
     assert.deepEqual(recovered, { action: "noop", reason: "ok" });
 
-    // Re-drift immediately after genuine recovery must NOT be blocked by the old cooldown
     const reDriftedAfterRecovery = decideHookAction([
       makeStep(0, "PLANNER_RESPONSE", { thinking: englishThinking }),
       makeStep(1, "SYSTEM_MESSAGE", { content: wrappedMarker }),
@@ -222,7 +217,6 @@ describe("transcript reducer", () => {
     assert.equal(reDriftedAfterRecovery.stepIndex, 3);
     assert.deepEqual(reDriftedAfterRecovery.driftedFields, ["thinking"]);
 
-    // Recovery after hitting thinking cap unlocks future injections
     const unlockedAfterCap = decideHookAction([
       makeStep(0, "PLANNER_RESPONSE", { thinking: englishThinking }),
       makeStep(1, "SYSTEM_MESSAGE", { content: wrappedMarker }),
@@ -579,7 +573,6 @@ describe("UI tool labels: PreToolUse decision and PostInvocation/Stop tracking",
     };
     assert.equal(decidePreToolUseAction(koreanStepsCall, []).action, "allow");
 
-    // Korean prefix followed by a real English prose clause is still denied
     assert.equal(
       decidePreToolUseAction(
         {
@@ -591,7 +584,6 @@ describe("UI tool labels: PreToolUse decision and PostInvocation/Stop tracking",
       "deny",
     );
 
-    // Imperative English titles with PascalCase/camelCase identifiers must still be denied
     assert.equal(
       decidePreToolUseAction(
         { name: "update_steps", args: { steps: [{ title: "Check UserController", status: "in_progress" }] } },
@@ -620,13 +612,11 @@ describe("UI tool labels: PreToolUse decision and PostInvocation/Stop tracking",
     };
     assert.equal(decidePreToolUseAction(englishAskCall, []).action, "deny");
 
-    // Non-UI tools are never blocked by PreToolUse
     assert.equal(
       decidePreToolUseAction({ name: "run_command", args: { CommandLine: "npm test", toolSummary: "Run unit tests" } }, []).action,
       "allow",
     );
 
-    // Parallel calls in a single PLANNER_RESPONSE still count as 1 attempt so attempt 1 is denied
     const taskCall1 = { name: "task_create", args: { subject: "Inspect config files" } };
     const taskCall2 = { name: "task_create", args: { subject: "Verify output format" } };
     assert.equal(
@@ -637,7 +627,6 @@ describe("UI tool labels: PreToolUse decision and PostInvocation/Stop tracking",
       "deny",
     );
 
-    // Retry cap allows pass-through after 2 drifted attempts in the same turn (supports both toolCalls and tool_calls)
     const capped = decidePreToolUseAction(englishStepsCall, [
       makeStep(0, "USER_INPUT", { content: "점검해 줘" }),
       makeStep(1, "PLANNER_RESPONSE", { toolCalls: [englishStepsCall] }),
@@ -708,7 +697,6 @@ describe("UI tool labels: PreToolUse decision and PostInvocation/Stop tracking",
     assert.equal(stopDecision.alreadyCoveredByPostHook, false);
     assert.ok(stopDecision.reasonMessage.startsWith(DRIFT_MARKER));
 
-    // Thinking-only marker immediately after latest planner MUST NOT silence Stop reason
     const samePlannerThinkingMarker = decideStopAction(
       [
         makeStep(0, "USER_INPUT", { content: "설명해 줘" }),
@@ -724,7 +712,6 @@ describe("UI tool labels: PreToolUse decision and PostInvocation/Stop tracking",
     assert.equal(samePlannerThinkingMarker.alreadyCoveredByPostHook, false);
     assert.ok(samePlannerThinkingMarker.reasonMessage.includes("직전 최종 응답이 영어로 작성되었다."));
 
-    // Real Antigravity runtime Stop header format is parsed accurately
     const runtimeStopMessage = [
       "The following is a <SYSTEM_MESSAGE> not actually sent by the user.",
       "",
@@ -739,7 +726,6 @@ describe("UI tool labels: PreToolUse decision and PostInvocation/Stop tracking",
 
     const contentMarker = wrapAntigravityHookMessage(buildCorrectionMessage(["content"]));
 
-    // Intermediate tool-calling step with a PostInvocation content marker does not block Stop on the final English response
     const stopAfterIntermediateToolCall = decideStopAction(
       [
         makeStep(0, "USER_INPUT", { content: "설명해 줘" }),
@@ -758,7 +744,6 @@ describe("UI tool labels: PreToolUse decision and PostInvocation/Stop tracking",
     );
     assert.equal(stopAfterIntermediateToolCall.action, "continue");
 
-    // Second English final answer after a Stop marker hits the stateless retry cap
     const stopAfterPriorStopRetry = decideStopAction(
       [
         makeStep(0, "USER_INPUT", { content: "설명해 줘" }),
@@ -770,7 +755,6 @@ describe("UI tool labels: PreToolUse decision and PostInvocation/Stop tracking",
     );
     assert.deepEqual(stopAfterPriorStopRetry, { action: "noop", reason: "stop_retry_cap_reached" });
 
-    // Content-only marker does NOT put thinking tracker into cooldown
     const thinkingAfterContentMarker = decideHookAction([
       makeStep(0, "USER_INPUT", { content: "설명해 줘" }),
       makeStep(1, "PLANNER_RESPONSE", {
@@ -845,7 +829,6 @@ describe("structured drift marker tags", () => {
     );
     assert.deepEqual(legacyUi?.fields, ["ui"]);
 
-    // A legacy marker without inferable fields covers every field.
     const englishThinking = "Let me read the hook script and verify the JSON output format carefully.";
     const englishContent = "All unit tests passed and every exported interface has been verified cleanly.";
     const opaque = makeStep(1, "SYSTEM_MESSAGE", { content: `${LEGACY_DRIFT_MARKERS[0]} please fix it` });
@@ -855,7 +838,6 @@ describe("structured drift marker tags", () => {
       { action: "noop", reason: "already_covered" },
     );
 
-    // A structured content-only marker covers content but not thinking.
     const contentOnly = decideHookAction([
       makeStep(0, "PLANNER_RESPONSE", { thinking: englishThinking, content: englishContent }),
       makeStep(1, "SYSTEM_MESSAGE", { content: wrapAntigravityHookMessage(buildCorrectionMessage(["content"])) }),
@@ -897,7 +879,6 @@ describe("regression #6: PreToolUse denial interplay with PostInvocation and the
     assert.deepEqual(uiAndThinking.driftedFields, ["thinking"]);
     assert.equal(parseDriftMarkerStep(makeStep(3, "SYSTEM_MESSAGE", { content: uiAndThinking.message }))?.fields.includes("ui"), false);
 
-    // Same flow through the adapter: the GENERIC denial line survives parsing.
     const records = [
       { step_index: 0, type: "USER_INPUT", content: "점검해 줘" },
       { step_index: 1, type: "PLANNER_RESPONSE", thinking: englishThinking, tool_calls: [englishStepsCall] },
@@ -932,7 +913,6 @@ describe("regression #6: PreToolUse denial interplay with PostInvocation and the
     ];
     assert.equal(decidePreToolUseAction(englishStepsCall, recoveredThenEnglish).action, "deny");
 
-    // A Korean call that was itself denied does not reset the budget.
     const koreanButDenied = [...twoDenied, makeStep(5, "PLANNER_RESPONSE", { toolCalls: [koreanStepsCall] }), makeDenialStep(6)];
     assert.equal(decidePreToolUseAction(englishStepsCall, koreanButDenied).action, "allow");
   });
@@ -1011,7 +991,6 @@ describe("QA F1/F3/F5: denial detection, per-call denial mapping, legacy 사고 
     assert.equal(readTranscriptSteps(fullPath).length, 1);
     assert.deepEqual(readTranscriptSteps(fullPath, (path) => (path === fullPath ? toJsonl(records) : "")).length, 1);
 
-    // GENERIC-only transcript_full.jsonl (no denial) falls back to transcript.jsonl.
     writeFileSync(fullPath, toJsonl([readOutput]), "utf8");
     writeFileSync(join(dir, "transcript.jsonl"), toJsonl([{ step_index: 0, type: "USER_INPUT", content: "점검해 줘" }]), "utf8");
     assert.deepEqual(readTranscriptSteps(join(dir, "transcript.jsonl")).map((step) => step.type), ["USER_INPUT"]);
@@ -1032,7 +1011,6 @@ describe("QA F1/F3/F5: denial detection, per-call denial mapping, legacy 사고 
       assert.equal(decidePreToolUseAction(englishStepsCall, steps).reason, "pre_tool_retry_cap_reached");
     }
 
-    // The Korean call going through (its own result is not a denial) still resets the budget.
     const passed = inMemory.map((step) => (step.stepIndex === 5 ? { ...step, status: "DONE", error: "" } : step));
     assert.equal(decidePreToolUseAction(englishStepsCall, passed).action, "deny");
   });
@@ -1062,5 +1040,46 @@ describe("QA F1/F3/F5: denial detection, per-call denial mapping, legacy 사고 
       { terminationReason: "NO_TOOL_CALL" },
     );
     assert.equal(decision.action, "continue");
+  });
+});
+
+describe("regression: simultaneous cap reason and replayTrackers lastUserInput consistency", () => {
+  const englishThinking = "Let me inspect the repository structure and verify all files carefully.";
+  const koreanThinking = "먼저 저장소 구조를 차근차근 분석하고 핵심 파일을 점검한다.";
+  const englishContent = "Here is the complete English translation and summary of the requested text.";
+  const englishStepsCall = {
+    name: "update_steps",
+    args: { steps: [{ title: "Inspect repository layout", status: "in_progress" }] },
+  };
+
+  it("returns cap_reached when both thinking and ui hit their failure caps simultaneously", () => {
+    const steps = [
+      makeStep(0, "USER_INPUT", { content: "저장소를 점검해 줘" }),
+      makeStep(1, "PLANNER_RESPONSE", { thinking: englishThinking, toolCalls: [englishStepsCall] }),
+      makeStep(2, "SYSTEM_MESSAGE", { content: buildCorrectionMessage(["thinking", "ui"]) }),
+      makeStep(3, "PLANNER_RESPONSE", { thinking: englishThinking, toolCalls: [englishStepsCall] }),
+      makeStep(4, "PLANNER_RESPONSE", { thinking: englishThinking, toolCalls: [englishStepsCall] }),
+      makeStep(5, "PLANNER_RESPONSE", { thinking: englishThinking, toolCalls: [englishStepsCall] }),
+      makeStep(6, "SYSTEM_MESSAGE", { content: buildCorrectionMessage(["thinking", "ui"]) }),
+      makeStep(7, "PLANNER_RESPONSE", { thinking: englishThinking, toolCalls: [englishStepsCall] }),
+      makeStep(8, "PLANNER_RESPONSE", { thinking: englishThinking, toolCalls: [englishStepsCall] }),
+      makeStep(9, "PLANNER_RESPONSE", { thinking: englishThinking, toolCalls: [englishStepsCall] }),
+      makeStep(10, "PLANNER_RESPONSE", { thinking: englishThinking, toolCalls: [englishStepsCall] }),
+      makeStep(11, "PLANNER_RESPONSE", { thinking: englishThinking, toolCalls: [englishStepsCall] }),
+    ];
+
+    const decision = decideHookAction(steps);
+    assert.deepEqual(decision, { action: "noop", reason: "cap_reached" });
+  });
+
+  it("applies lastUserInput exemption consistently inside replayTrackers when USER_INPUT is absent", () => {
+    const steps = [
+      makeStep(0, "PLANNER_RESPONSE", { thinking: koreanThinking, content: englishContent }),
+      makeStep(1, "SYSTEM_MESSAGE", { content: `${DRIFT_MARKER} 한국어로 작성하라` }),
+      makeStep(2, "PLANNER_RESPONSE", { thinking: englishThinking, content: englishContent }),
+    ];
+
+    const decision = decideHookAction(steps, { lastUserInput: "Please reply in English." });
+    assert.deepEqual(decision, { action: "noop", reason: "cooldown_active" });
   });
 });

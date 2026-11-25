@@ -425,7 +425,6 @@ describe("analyzer", () => {
 
 describe("analyzer regressions: headings, quoted code, error quotes, and bypasses", () => {
   it("exempts short markdown headings and cited English principle titles inside Korean content while catching prose drift", () => {
-    // Exact #17 repro: Claude heavy-english-skill-tools Korean content with short English markdown heading
     const claudeContentRepro = [
       "문서 전체와 분석기 구현을 확인한 결과를 아래 항목별로 정리한다.",
       "",
@@ -437,7 +436,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
     assert.equal(claudeAnalysis.status, "korean");
     assert.equal(claudeAnalysis.driftReason, "none");
 
-    // 8-word English heading rule title inside Korean content must not trigger english_run or english_segment
     const headingWithEightWords = [
       "분석기 설계에서 특히 중요한 규칙을 정리한다.",
       "",
@@ -446,7 +444,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
     ].join("\n");
     assert.equal(analyzeField("content", headingWithEightWords).status, "korean");
 
-    // Quoted, parenthetical, bold, and separator-listed English rule titles inside Korean explanations (Gemini ~90% Korean content style)
     const geminiCitedTitlesContent = [
       "문서 전체의 핵심 원칙과 분석기 구현 경계를 한국어로 상세하게 정리하면 다음과 같다.",
       "결정적 라인 스캐너 우선(Prefer deterministic line scanners over fragile backtracking regexes) 규칙을 분석기에 적용하면 다중 줄 코드 펜스 처리에서 발생하는 역추적 위험을 효과적으로 줄일 수 있다.",
@@ -460,7 +457,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
     assert.equal(geminiAnalysis.status, "korean");
     assert.equal(geminiAnalysis.driftReason, "none");
 
-    // Concise Korean bullet list citing English rule titles in bold/quotes/parentheses still passes when non-cited prose is Korean
     const conciseRuleBullets = [
       "- **Prefer deterministic line scanners over fragile backtracking regexes**: 정규식 대신 줄 단위 스캐너를 사용한다.",
       '- "Separate user-facing verbatim requirements from internal reasoning hygiene" 원칙에 따라 내부 사고와 최종 출력의 표기 범위를 분리한다.',
@@ -468,7 +464,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
     ].join("\n");
     assert.equal(analyzeField("content", conciseRuleBullets).status, "korean");
 
-    // Long prose heading (>100 chars) inside Korean content MUST still be flagged
     const longProseHeading = [
       "전체 구조를 한국어로 간단히 요약한 뒤 다음 섹션을 확인한다.",
       "",
@@ -477,7 +472,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
     ].join("\n");
     assert.equal(analyzeField("content", longProseHeading).status, "drifted");
 
-    // All-English document made only of short headings MUST still trigger document-wide low_hangul_ratio
     const allEnglishHeadings = [
       "# Boundary Discipline",
       "## Model the Domain",
@@ -487,7 +481,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
     assert.equal(allHeadingsAnalysis.status, "drifted");
     assert.equal(allHeadingsAnalysis.driftReason, "low_hangul_ratio");
 
-    // Genuine 8+ word English prose runs inside high-Hangul Korean sentences (quoted, parenthetical) MUST still trigger english_run
     const quotedProseRun =
       '먼저 플러그인 전체 설정 파일과 전사 분석기 경계 조건을 차례대로 확인하며 한국어로 정리했다. 이어서 중간 메모를 남기면서 "Let me check the configuration file first and verify every module carefully." 라고 적은 뒤 최종 결과를 한국어로 보고하고 검증을 마무리한다.';
     const quotedProseAnalysis = analyzeField("content", quotedProseRun);
@@ -504,7 +497,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
   });
 
   it("strips fenced code blocks inside blockquotes without swallowing trailing English prose", () => {
-    // Exact #17 repro: ~33 Hangul chars + 8-line > ```js block
     const quotedCodeRepro = [
       "아래 인용된 자바스크립트 예시 코드의 핵심 동작만 한국어로 요약한다.",
       "",
@@ -521,7 +513,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
     assert.equal(analysis.latinCount, 0);
     assert.equal(analysis.status, "korean");
 
-    // Nested blockquote fenced code block
     const nestedQuotedCode = [
       "중첩 인용구 내부의 코드 블록도 자연어 비율 계산에서 완전히 제외한다.",
       "",
@@ -531,7 +522,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
     ].join("\n");
     assert.equal(analyzeField("content", nestedQuotedCode).status, "korean");
 
-    // Unclosed fence inside a blockquote MUST NOT swallow English prose outside the blockquote
     const unclosedQuotedFence = [
       "> ```js",
       "> const onlyQuoted = true;",
@@ -542,7 +532,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
   });
 
   it("bounds ERROR_QUOTE_RE length/openers and catches short English prose with 1-2 Hangul chars", () => {
-    // Generic prose openers must NOT be stripped as error quotes
     const couldNotProse =
       '"Could not decide whether to refactor the whole module right now because the tests are unclear."';
     assert.equal(analyzeField("thinking", couldNotProse).status, "drifted");
@@ -551,13 +540,11 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
       "> Failed to see why the previous logic should stay intact when a simpler parser exists.";
     assert.equal(analyzeField("thinking", failedToSeeProse).status, "drifted");
 
-    // Overlong >180 char quote even starting with Error: or Failed to connect must NOT be stripped
     const overlongErrorLikeProse =
       '"Error: Failed to connect to the service, and now let me spend several extra clauses explaining the full architectural rationale in English so that the quote easily exceeds the one hundred eighty character limit."';
     assert.ok(overlongErrorLikeProse.length > 180);
     assert.equal(analyzeField("thinking", overlongErrorLikeProse).status, "drifted");
 
-    // Legitimate short error quotes still pass inside Korean text
     const validShortErrors = [
       '원문 오류 "Failed to connect to remote host"와 "Could not find module foo"를 확인했다.',
       "> Unable to open file /etc/hosts",
@@ -565,7 +552,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
     ].join("\n");
     assert.equal(analyzeField("content", validShortErrors).status, "korean");
 
-    // 1-2 Hangul char prefix must NOT bypass short_english_prose
     const oneHangulDrift = analyzeField("thinking", "네, I will check the file now.");
     assert.equal(oneHangulDrift.status, "drifted");
     assert.equal(oneHangulDrift.driftReason, "short_english_prose");
@@ -617,7 +603,6 @@ describe("analyzer regressions: headings, quoted code, error quotes, and bypasse
       "한국어 설명입니다. (Check the config file and verify everything works properly) 계속 설명합니다.";
     assert.equal(analyzeField("content", bracketedImperativeProse).status, "drifted");
 
-    // Technical key-value checkpoint label inside Korean report must NOT false-positive
     const koreanReportWithCheckpoint = [
       "목표는 코드베이스의 정확성과 훅 계약을 읽기 전용으로 점검하는 것입니다.",
       "",
@@ -702,5 +687,52 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
       "이 문장은 자연스러운 한국어 본문으로 작성되어 전체 한글 비율을 충분히 높게 유지한다.",
     ].join("\n");
     assert.equal(analyzeField("content", proseHeading).status, "drifted");
+  });
+
+  it("strips multiline inline backtick code spans inside a paragraph without swallowing prose across blocks", () => {
+    const multilineInlineCode = [
+      "다음 인라인 코드 예시를 참고해 설정을 확인한다:",
+      "`const x = \"this is a long english string literal inside inline code\";",
+      "console.log(\"another long english message that must be stripped\", x);`",
+      "위 코드는 정상적으로 제거되어 한국어 본문으로 판정되어야 한다.",
+    ].join("\n");
+    assert.equal(analyzeField("content", multilineInlineCode).status, "korean");
+
+    const strayBackticksAcrossParagraphs = [
+      "첫 번째 문단에서 짝이 없는 `기호가 남았다.",
+      "",
+      "Now let me explain the entire root cause and fix in pure English prose right here.",
+      "",
+      "세 번째 문단에도 짝이 없는 `기호가 남았다.",
+    ].join("\n");
+    assert.equal(analyzeField("content", strayBackticksAcrossParagraphs).status, "drifted");
+
+    const strayBackticksAcrossListItems = [
+      "작업 항목을 정리하면 다음과 같다.",
+      "- 첫 번째 항목의 짝 없는 `백틱",
+      "- Now let me write an English explanation inside the next list item.",
+      "- 세 번째 항목의 짝 없는 `백틱",
+    ].join("\n");
+    assert.equal(analyzeField("content", strayBackticksAcrossListItems).status, "drifted");
+  });
+
+  it("detects 3-word English imperative clauses in mixed Korean UI labels without flagging technical proper nouns", () => {
+    for (const label of [
+      "저장소 Check build status",
+      '"단계" Check repository status',
+      "MCP 서버 Check status now",
+    ]) {
+      assert.equal(analyzeUiTexts([label]).status, "drifted", `expected drifted for: ${label}`);
+    }
+
+    for (const label of [
+      "React Router 설치",
+      "GitHub Actions 설정",
+      "TypeScript 5.x 마이그레이션",
+      "API status 확인",
+      "update_steps 도구 확인",
+    ]) {
+      assert.notEqual(analyzeUiTexts([label]).status, "drifted", `expected non-drifted for: ${label}`);
+    }
   });
 });

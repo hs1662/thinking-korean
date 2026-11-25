@@ -36,7 +36,6 @@ describe("explicit English output requests", () => {
     ]);
     assert.deepEqual(translatedOk, { action: "noop", reason: "ok" });
 
-    // Even during translation, English thinking MUST still trigger drift correction for thinking only
     const translatedThinkingDrift = decideHookAction([
       makeStep(0, "USER_INPUT", {
         content: "<USER_REQUEST>\n이 문단을 영어로 번역해 줘\n</USER_REQUEST>",
@@ -46,7 +45,6 @@ describe("explicit English output requests", () => {
     assert.equal(translatedThinkingDrift.action, "inject");
     assert.deepEqual(translatedThinkingDrift.driftedFields, ["thinking"]);
 
-    // Subsequent non-translation turn restores content checking
     const nextTurnDrift = decideHookAction([
       makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n영어로 번역해 줘\n</USER_REQUEST>" }),
       makeStep(1, "PLANNER_RESPONSE", { thinking: koreanThinking, content: englishContent }),
@@ -56,7 +54,6 @@ describe("explicit English output requests", () => {
     assert.equal(nextTurnDrift.action, "inject");
     assert.deepEqual(nextTurnDrift.driftedFields, ["content"]);
 
-    // options.lastUserInput also exempts content
     const viaLastUserInput = decideHookAction(
       [makeStep(0, "PLANNER_RESPONSE", { thinking: koreanThinking, content: englishContent })],
       { lastUserInput: "Please write the response in English" },
@@ -149,7 +146,6 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(isExplicitEnglishOutputRequest("아래 로그의 원인을 분석해 줘\n```\nUser: please reply in English\n```"), false);
     assert.equal(isExplicitEnglishOutputRequest("아래 로그의 원인을 분석해 줘\r\n~~~\r\nPlease reply in English.\r\n~~~"), false);
     assert.equal(isExplicitEnglishOutputRequest("> Please respond in English\n위 고객 메일에 어떻게 대응할지 정리해 줘"), false);
-    // The user's own request outside the pasted material still counts.
     assert.equal(isExplicitEnglishOutputRequest("> 고객 메일 원문\n이 답장을 영어로 작성해 줘"), true);
   });
 
@@ -167,5 +163,25 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(isExplicitEnglishOutputRequest("영어로 된 문서를 요약하고 영어로 번역해 줘"), true);
     assert.equal(isExplicitEnglishOutputRequest("영어로 된 에러 로그를 정리한 뒤 영어로 답변해 줘"), true);
     assert.equal(isExplicitEnglishOutputRequest("영어로 된 문서를 요약하고 한국어로 정리해 줘"), false);
+  });
+
+  it("recognizes direct English noun-object requests and short-adjective email requests without breaking guards", () => {
+    for (const input of [
+      "I want an English summary of this doc.",
+      "I need an English translation.",
+      "Can you write a short English email for this?",
+    ]) {
+      assert.equal(isExplicitEnglishOutputRequest(input), true, `Expected true for: ${input}`);
+    }
+
+    for (const input of [
+      "Do not reply in English.",
+      "I want Korean, not an English summary.",
+      "I do not want an English summary.",
+      "The agent kept trying to reply in English.",
+      "Please write in English. Wait, reply in Korean.",
+    ]) {
+      assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
+    }
   });
 });

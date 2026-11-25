@@ -123,7 +123,6 @@ describe("post-invocation hook CLI and adapter", () => {
       "utf8",
     );
 
-    // Non-PostInvocation event is ignored even if transcript drifted
     const ignoredEvent = handlePostInvocation(
       JSON.stringify({
         hookEventName: "SessionStart",
@@ -132,7 +131,6 @@ describe("post-invocation hook CLI and adapter", () => {
     );
     assert.deepEqual(ignoredEvent, {});
 
-    // Without translation request, content drift triggers injection (and trimmed path works)
     const drifted = handlePostInvocation(
       JSON.stringify({
         hookEventName: "PostInvocation",
@@ -141,7 +139,6 @@ describe("post-invocation hook CLI and adapter", () => {
     );
     assert.equal(drifted.injectSteps.length, 1);
 
-    // With explicit lastUserInput translation request, content drift is exempted
     const proc = runHookSubprocess(
       HOOK_SCRIPT,
       JSON.stringify({
@@ -177,7 +174,6 @@ describe("post-invocation hook CLI and adapter", () => {
     const okResult = handlePostInvocation(JSON.stringify({ hookEventName: "PostInvocation", transcriptPath }));
     assert.deepEqual(okResult, {});
 
-    // Append a drifted planner response after another huge GENERIC step (without trailing newline)
     const withDrift =
       toJsonl(records) +
       `${JSON.stringify({ step_index: 5, type: "GENERIC", content: hugeToolPayload })}\n` +
@@ -253,7 +249,6 @@ describe("post-invocation hook CLI and adapter", () => {
     const transcriptPath = join(dir, "transcript_full.jsonl");
     const padding = "A".repeat(300);
 
-    // Nested "type":"tool_result" sits inside the first 256 bytes, while top-level "type":"PLANNER_RESPONSE" comes after byte 256.
     const nestedPlannerRecord = {
       step_index: 1,
       payload: { type: "tool_result", padding },
@@ -268,7 +263,6 @@ describe("post-invocation hook CLI and adapter", () => {
     assert.equal(driftResult.injectSteps.length, 1);
     assert.ok(driftResult.injectSteps[0].systemMessage.systemMessage.startsWith(DRIFT_MARKER));
 
-    // Nested "type":"tool_result" before byte 256 on USER_INPUT must still preserve explicit translation exemption.
     const nestedUserInput = {
       step_index: 0,
       meta: { type: "tool_result", padding },
@@ -327,7 +321,6 @@ describe("post-invocation hook CLI and adapter", () => {
       "Now let me inspect the remaining files carefully before writing any output.",
     );
 
-    // Put >256KB GENERIC first so the final 255/256/257B lines land in a partial trailing chunk (bytesRead < CHUNK_SIZE) without trailing newline.
     const bigGeneric = JSON.stringify({ step_index: 0, type: "GENERIC", content: "G".repeat(270_000) });
     writeFileSync(transcriptPath, `${bigGeneric}\n${line255}\n${line256}\n${line257Drifted}`, "utf8");
 
@@ -436,7 +429,6 @@ describe("pre-tool-use hook CLI", () => {
       assert.equal(/[A-Za-z]/.test(parsedDeny.reason), false);
     }
 
-    // Missing, blank, or non-string transcriptPath fails open with explicit allow so retries cannot loop.
     for (const missingPathPayload of [
       { hookEventName: "PreToolUse", toolCall: englishStepsCall },
       { hookEventName: "PreToolUse", transcriptPath: "", toolCall: englishStepsCall },
@@ -546,7 +538,6 @@ describe("P0 #1: PreToolUse CLI always prints an explicit allow decision when no
       "retry cap reached",
     );
 
-    // Force an exception inside the handler: a preload makes String#trim throw for a sentinel payload.
     const sentinel = "__TK_FORCE_HANDLER_EXCEPTION__";
     const preload = `data:text/javascript,${encodeURIComponent(
       `const trim = String.prototype.trim; String.prototype.trim = function () { if (String(this).includes(${JSON.stringify(sentinel)})) { throw new Error("forced"); } return trim.call(this); };`,
@@ -719,5 +710,141 @@ describe("regression #7: dual read path and hooks.json contract", () => {
     const textSteps = readTranscriptSteps(transcriptPath, () => raw);
     assert.deepEqual(textSteps, fastSteps);
     assert.equal(textSteps[1].stepIndex, 2);
+  });
+});
+
+describe("regression: snake_case hook payload compatibility and corrupt JSON line parity", () => {
+  it("accepts snake_case payload keys in hook_event_name, handlePostInvocation, and handleStop", () => {
+    const dir = createTempDir("thinking-korean-snake-");
+    const transcriptPath = join(dir, "transcript_full.jsonl");
+    writeFileSync(
+      transcriptPath,
+      toJsonl([
+        {
+          step_index: 0,
+          type: "PLANNER_RESPONSE",
+          thinking: "먼저 번역할 문단의 의미를 한국어로 분석하고 자연스러운 표현을 고르자.",
+          content: "Here is the natural English translation of the requested Korean paragraph.",
+        },
+      ]),
+      "utf8",
+    );
+
+    assert.deepEqual(
+      handlePostInvocation(JSON.stringify({ hook_event_name: "SessionStart", transcript_path: transcriptPath })),
+      {},
+    );
+    assert.deepEqual(
+      handleStop(
+        JSON.stringify({
+          hook_event_name: "PostInvocation",
+          transcript_path: transcriptPath,
+          termination_reason: "NO_TOOL_CALL",
+        }),
+      ),
+      {},
+    );
+
+    assert.deepEqual(
+      handlePostInvocation(
+        JSON.stringify({
+          hook_event_name: "PostInvocation",
+          transcript_path: transcriptPath,
+          last_user_input: "이 문단을 영어로 번역해 줘",
+        }),
+      ),
+      {},
+    );
+
+    const stopContinue = handleStop(
+      JSON.stringify({
+        hook_event_name: "Stop",
+        transcript_path: transcriptPath,
+        termination_reason: "NO_TOOL_CALL",
+      }),
+    );
+    assert.equal(stopContinue.decision, "continue");
+
+    assert.deepEqual(
+      handleStop(
+        JSON.stringify({
+          hook_event_name: "Stop",
+          transcript_path: transcriptPath,
+          termination_reason: "NO_TOOL_CALL",
+          continuation_active: true,
+        }),
+      ),
+      {},
+    );
+
+    assert.deepEqual(
+      handleStop(
+        JSON.stringify({
+          hook_event_name: "Stop",
+          transcript_path: transcriptPath,
+          termination_reason: "NO_TOOL_CALL",
+          last_user_input: "Please reply in English.",
+        }),
+      ),
+      {},
+    );
+  });
+
+  it("matches transcriptAvailable and fallback stepIndex across fast and text readers on corrupt JSON lines", () => {
+    const dir = createTempDir("thinking-korean-corrupt-parity-");
+    const englishStepsCall = {
+      name: "update_steps",
+      args: { steps: [{ title: "Check the build status", status: "in_progress" }] },
+    };
+
+    const corruptOtherPath = join(dir, "corrupt-other.jsonl");
+    const corruptOtherRaw = '{"type":"OTHER", broken\n';
+    writeFileSync(corruptOtherPath, corruptOtherRaw, "utf8");
+
+    const corruptGenericHugePath = join(dir, "corrupt-generic-huge.jsonl");
+    const corruptGenericHugeRaw = `{"type":"GENERIC","content":"${"X".repeat(70 * 1024)} broken\n`;
+    writeFileSync(corruptGenericHugePath, corruptGenericHugeRaw, "utf8");
+
+    const corruptGenericShortPath = join(dir, "corrupt-generic-short.jsonl");
+    const corruptGenericShortRaw = '{"type":"GENERIC", broken\n';
+    writeFileSync(corruptGenericShortPath, corruptGenericShortRaw, "utf8");
+
+    const corruptEndingBracePath = join(dir, "corrupt-ending-brace.jsonl");
+    const corruptEndingBraceRaw = `{"type":"GENERIC","content":"${"Z".repeat(70 * 1024)} unclosed}\n`;
+    writeFileSync(corruptEndingBracePath, corruptEndingBraceRaw, "utf8");
+
+    for (const [filePath, raw] of [
+      [corruptOtherPath, corruptOtherRaw],
+      [corruptGenericHugePath, corruptGenericHugeRaw],
+      [corruptGenericShortPath, corruptGenericShortRaw],
+      [corruptEndingBracePath, corruptEndingBraceRaw],
+    ]) {
+      const payload = JSON.stringify({
+        hookEventName: "PreToolUse",
+        transcriptPath: filePath,
+        toolCall: englishStepsCall,
+      });
+      const fastOut = handlePreToolUse(payload);
+      const textOut = handlePreToolUse(payload, () => raw);
+      assert.deepEqual(fastOut, { decision: "allow" }, `fast reader should fail open for ${filePath}`);
+      assert.deepEqual(textOut, { decision: "allow" }, `text reader should fail open for ${filePath}`);
+    }
+
+    const mixedPath = join(dir, "mixed-corrupt.jsonl");
+    const lateTypeOther = JSON.stringify({ pad: "P".repeat(300), type: "OTHER", content: "ok" });
+    const mixedRaw =
+      '{"type":"OTHER", broken\n' +
+      `{"type":"GENERIC","content":"${"Y".repeat(70 * 1024)} broken\n` +
+      `{"type":"GENERIC","content":"${"Z".repeat(70 * 1024)} unclosed}\n` +
+      '{"type":"GENERIC", broken\n' +
+      `${lateTypeOther}\n` +
+      `${JSON.stringify({ type: "PLANNER_RESPONSE", thinking: "한국어 추론으로 정상 처리한다.", content: "정상 응답입니다." })}\n`;
+    writeFileSync(mixedPath, mixedRaw, "utf8");
+
+    const fastSteps = readTranscriptSteps(mixedPath);
+    const textSteps = readTranscriptSteps(mixedPath, () => mixedRaw);
+    assert.deepEqual(fastSteps, textSteps);
+    assert.equal(fastSteps.length, 1);
+    assert.equal(fastSteps[0].stepIndex, 1);
   });
 });
