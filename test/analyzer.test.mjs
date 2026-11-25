@@ -806,4 +806,15 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
     assert.equal(analysis.status, "korean");
   });
+
+  it("scans long dash-joined tokens without a dot in linear time without quadratic DOTTED_PATH_RE backtracking", () => {
+    const dashChain = `a-${"b-".repeat(35_000)}c`;
+    const sample = `긴 슬러그 식별자 ${dashChain} 와 a.b.c 경로를 한국어로 확인하고 검증한다.`;
+    const startMs = performance.now();
+    const analysis = analyzeField("content", sample);
+    const elapsedMs = performance.now() - startMs;
+
+    assert.ok(elapsedMs < 50, `expected linear-time analysis (<50ms), took ${elapsedMs.toFixed(1)}ms`);
+    assert.equal(analysis.status, "korean");
+  });
 });
