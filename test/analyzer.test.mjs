@@ -874,4 +874,52 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
     assert.equal(analyzeUiTexts(["(Check) [build] status!"]).status, "drifted");
     assert.notEqual(analyzeUiTexts(["(React) [Router]!"]).status, "drifted");
   });
+
+  it("does not let unclosed fenced code blocks swallow trailing English prose drift", () => {
+    const unclosedBacktick = [
+      "한국어 도입 문장입니다.",
+      "```js",
+      "const value = 1;",
+      "Now I forgot to close the fence and switched completely to English prose explaining the architecture.",
+    ].join("\n");
+    const unclosedTilde = [
+      "한국어 도입 문장입니다.",
+      "~~~txt",
+      "This trailing English explanation must still be detected when the tilde fence never closes.",
+    ].join("\n");
+
+    assert.equal(analyzeField("thinking", unclosedBacktick).status, "drifted");
+    assert.equal(analyzeField("content", unclosedTilde).status, "drifted");
+  });
+
+  it("detects inline 4-to-7-word English prose sentences appended on the same line after a long Korean prefix", () => {
+    const inlineTail =
+      "이 추론과 생각 요약은 반드시 한국어로만 작성한다. 먼저 설정 파일을 자세하게 확인했다. Let me check this file now.";
+    const inlineFinite =
+      "이 추론과 생각 요약은 반드시 한국어로만 작성한다. 분석 결과를 정리한다. This parser handles the boundary.";
+    const legitMixed =
+      "이 추론과 생각 요약은 반드시 한국어로만 작성한다. 먼저 `scripts/hook-io.mjs`의 readTranscriptStepsFast와 parseRawRecord 경계를 확인했다.";
+
+    assert.equal(analyzeField("thinking", inlineTail).status, "drifted");
+    assert.equal(analyzeField("thinking", inlineFinite).status, "drifted");
+    assert.equal(analyzeField("thinking", legitMixed).status, "korean");
+  });
+
+  it("avoids false positives on backticked Hangul+digits UI labels while flagging Title Case English task and role labels", () => {
+    assert.notEqual(analyzeUiTexts(["`한글123` React Router"]).status, "drifted");
+    for (const driftedLabel of [
+      "Codebase Researcher",
+      "Database Debugger",
+      "Unit Test Execution",
+      "Git Status Check",
+      "Package Build",
+      "작업 단계 확인: Fix Auth Bug",
+      "작업 단계 확인: Check API Status",
+    ]) {
+      assert.equal(analyzeUiTexts([driftedLabel]).status, "drifted", `expected drifted for: ${driftedLabel}`);
+    }
+    for (const properName of ["React Router", "Docker Compose", "GitHub Actions", "Visual Studio Code", "TypeScript 5.x"]) {
+      assert.notEqual(analyzeUiTexts([properName]).status, "drifted", `expected proper noun pass for: ${properName}`);
+    }
+  });
 });
