@@ -207,6 +207,22 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "영작: 오늘 회의는 취소되었습니다.",
       "in English",
       "In English.",
+      "영어로 대답해 줘",
+      "영어로 대답해 주세요",
+      "영어로 대답 좀 해 줘",
+      "영어로 대답을 해 줘",
+      "영어로 대답 부탁해",
+      "영어로 알려 줘",
+      "영어로 알려 주세요",
+      "영어로 알려 주시겠어요?",
+      "영어로 알려 주실 수 있나요?",
+      "영어로 번역해서 보여 줘",
+      "영어로 번역해서 보여 주세요",
+      "영어로 요약해서 알려 줘",
+      "영어로 설명해 주시겠어요?",
+      "영어로 작성해 주시겠어요?",
+      "영어로 번역해 주실 수 있나요?",
+      "영어로 바꿔 주시겠어요?",
     ]) {
       assert.equal(isExplicitEnglishOutputRequest(input), true, `Expected true for: ${input}`);
     }
@@ -214,6 +230,12 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     for (const input of [
       "영어로 옮기지 마",
       "영어로 옮기지 말고 한국어로 답해 줘",
+      "영어로 대답하지 마",
+      "영어로 대답하지 말고 한국어로 대답해 줘",
+      "영어로 대답하면 안 돼",
+      "영어로 알려 주지 마",
+      "영어로 알려 주지 말고 한국어로 알려 줘",
+      "영어로 번역해서 보여 주지 마",
       "영작하지 마",
       "영작 좀 하지 마",
       "영작을 좀 하지 마",
@@ -298,6 +320,30 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "영어로 옮겨주었던거도 설명해 줘",
       "영어로 옮겨 줬던 내용을 설명해 줘",
       "영어로 옮겨줬던거를 요약해 줘",
+      "영어로 돼 있는 에러 메시지를 설명해 줘",
+      "영어로 돼있는 에러 메시지를 설명해 줘",
+      "영어로 돼 있는 거 설명해 줘",
+      "영어로 돼있는거를 요약해 줘",
+      "영어로 쓰여 있는 문서를 요약해 줘",
+      "영어로 쓰여있는것들을 정리해 줘",
+      "영어로 적혀 있는 로그를 정리해 줘",
+      "영어로 적혀있는거도 설명해 줘",
+      "영어로 나와 있는 경고를 설명해 줘",
+      "영어로 나와있는걸 요약해 줘",
+      "영어로 받은 이메일을 요약해 줘",
+      "영어로 받은거를 정리해 줘",
+      "영어로 온 메시지를 설명해 줘",
+      "영어로 온거 설명해 줘",
+      "영어로 뜬 에러를 설명해 줘",
+      "영어로 뜬거를 설명해 줘",
+      "영어로 뜨는 경고를 정리해 줘",
+      "영어로 뜨는거 요약해 줘",
+      "영어로 찍힌 로그를 설명해 줘",
+      "영어로 찍힌것들을 정리해 줘",
+      "영어로 찍히는 출력을 요약해 줘",
+      "영어로 찍히는거 설명해 줘",
+      "영어로 나오는 메시지를 설명해 줘",
+      "영어로 나오는거를 요약해 줘",
     ]) {
       assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
     }
@@ -371,5 +417,32 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
     assert.equal(decideHookAction(activeSourceModifierSteps).action, "inject");
     assert.deepEqual(decideHookAction(activeSourceModifierSteps).driftedFields, ["content"]);
     assert.equal(decideStopAction(activeSourceModifierSteps, { terminationReason: "NO_TOOL_CALL" }).action, "continue");
+
+    const politeReplySteps = [
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n영어로 대답해 줘\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 사용자의 질문에 영어로 대답을 작성하자.",
+        content: "Here is the answer to your question in English.",
+      }),
+    ];
+    assert.deepEqual(decideHookAction(politeReplySteps), { action: "noop", reason: "ok" });
+    assert.deepEqual(decideStopAction(politeReplySteps, { terminationReason: "NO_TOOL_CALL" }), {
+      action: "noop",
+      reason: "content_exempt",
+    });
+
+    const contractedSourceModifierSteps = [
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n영어로 돼 있는 에러 메시지를 설명해 줘\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 에러 메시지의 의미를 한국어로 설명하자.",
+        content: "This error message means the connection was refused by the remote host.",
+      }),
+    ];
+    assert.equal(decideHookAction(contractedSourceModifierSteps).action, "inject");
+    assert.deepEqual(decideHookAction(contractedSourceModifierSteps).driftedFields, ["content"]);
+    assert.equal(
+      decideStopAction(contractedSourceModifierSteps, { terminationReason: "NO_TOOL_CALL" }).action,
+      "continue",
+    );
   });
 });
