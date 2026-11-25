@@ -6,6 +6,9 @@
       "tools": {
         "verify_completion": {
           "eager": true
+        },
+        "manage_handoff": {
+          "eager": true
         }
       }
     }

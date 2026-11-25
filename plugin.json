@@ -2,8 +2,8 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "hstack",
   "displayName": "hstack",
-  "version": "2.0.0",
-  "description": "Keep model thinking traces, responses, and UI labels in natural conversational Korean while enforcing an evidence-grounded completion gate with eager MCP, PreToolUse interception, unified Stop recovery, and audit logging.",
+  "version": "2.1.0",
+  "description": "Keep model thinking traces, responses, and UI labels in natural conversational Korean while enforcing an evidence-grounded completion gate with risk-tiered read-only independent auditing, fact-distilled cross-session handoff, eager MCP, PreToolUse interception, unified Stop recovery, and audit logging.",
   "logo": "assets/logo.svg",
   "author": {
     "name": "hs1662",

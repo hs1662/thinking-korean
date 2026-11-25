@@ -222,17 +222,21 @@ describe("scripts/mcp/server.mjs stdio JSON-RPC roundtrip", () => {
       assert.deepEqual(pingRes.result, {});
 
       const listRes = await client.request("tools/list");
-      assert.equal(listRes.result.tools.length, 1);
-      const tool = listRes.result.tools[0];
-      assert.equal(tool.name, "verify_completion");
-      assert.equal(tool.inputSchema.additionalProperties, false);
-      assert.equal("_session" in tool.inputSchema.properties, false);
-      assert.equal("toolSummary" in tool.inputSchema.properties, false);
-      assert.equal(tool.inputSchema.required.includes("_session"), false);
-      assert.equal(tool.inputSchema.required.includes("toolSummary"), false);
-      assert.equal(analyzeField("content", tool.description).status, "korean");
-      for (const prop of Object.values(tool.inputSchema.properties)) {
-        assert.equal(analyzeField("content", prop.description).status, "korean");
+      assert.equal(listRes.result.tools.length, 2);
+      const tool = listRes.result.tools.find((t) => t.name === "verify_completion");
+      const handoffTool = listRes.result.tools.find((t) => t.name === "manage_handoff");
+      assert.ok(tool);
+      assert.ok(handoffTool);
+      for (const candidate of [tool, handoffTool]) {
+        assert.equal(candidate.inputSchema.additionalProperties, false);
+        assert.equal("_session" in candidate.inputSchema.properties, false);
+        assert.equal("toolSummary" in candidate.inputSchema.properties, false);
+        assert.equal(candidate.inputSchema.required.includes("_session"), false);
+        assert.equal(candidate.inputSchema.required.includes("toolSummary"), false);
+        assert.equal(analyzeField("content", candidate.description).status, "korean");
+        for (const prop of Object.values(candidate.inputSchema.properties)) {
+          assert.equal(analyzeField("content", prop.description).status, "korean");
+        }
       }
 
       const rejectRes = await client.request("tools/call", {
