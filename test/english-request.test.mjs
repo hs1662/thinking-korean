@@ -570,4 +570,82 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       assert.equal(isExplicitEnglishOutputRequest(prompt), false, `expected Korean for: ${prompt}`);
     }
   });
+
+  it("recognizes particle-suffixed (영어로만/영어로도) and verbless (답변은 영어로) requests in Stop and PostInvocation", () => {
+    for (const prompt of [
+      "영어로만 대답해",
+      "영어로만 대답해 줘",
+      "영어로만 답변해 주세요",
+      "영어로만 번역해 줘",
+      "영어로만 설명해 줘",
+      "영어로만 작성해 줘",
+      "영어로만 써 줘",
+      "영어로만 부탁해",
+      "영어로만 이 문장을 번역해 줘",
+      "영어로도 번역해 줘",
+      "영어로도 설명해 줘",
+      "영어로도 요약해 줘",
+      "영어로도 대답해 줘",
+      "영어로만",
+      "영어로만요",
+      "영어로도",
+      "영어로도요",
+      "답변은 영어로",
+      "답변은 영어로요",
+      "답변은 영어로.",
+      "답변은 영어로만",
+      "답변은 영어로만요",
+      "답변도 영어로",
+      "대답은 영어로",
+      "설명은 영어로",
+      "요약은 영어로",
+      "번역은 영어로",
+      "추론은 한국어로, 답변은 영어로",
+      "이 코드를 분석해 줘. 답변은 영어로만.",
+    ]) {
+      assert.equal(isExplicitEnglishOutputRequest(prompt), true, `expected exempt for: ${prompt}`);
+    }
+
+    for (const prompt of [
+      "영어로만 대답하지 마",
+      "영어로만 번역하지 말고 한국어로 답해 줘",
+      "영어로도 번역하지 마",
+      "지금도 전부 영어로만 나오잖아",
+      "왜 자꾸 영어로만 답변하는 거야?",
+      "영어로만 된 문서를 요약해 줘",
+      "답변은 한국어로",
+      "답변은 한국어로만",
+      "답변은 영어로 하지 마",
+      "왜 답변은 영어로?",
+      "답변은 왜 자꾸 영어로?",
+    ]) {
+      assert.equal(isExplicitEnglishOutputRequest(prompt), false, `expected Korean for: ${prompt}`);
+    }
+
+    const onlyInEnglishSteps = [
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n영어로만 대답해\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 사용자의 요청대로 영어로만 간결하게 답변을 작성하자.",
+        content: "Here is the concise English answer you requested.",
+      }),
+    ];
+    assert.deepEqual(decideHookAction(onlyInEnglishSteps), { action: "noop", reason: "ok" });
+    assert.deepEqual(decideStopAction(onlyInEnglishSteps, { terminationReason: "NO_TOOL_CALL" }), {
+      action: "noop",
+      reason: "content_exempt",
+    });
+
+    const verblessSteps = [
+      makeStep(0, "USER_INPUT", { content: "<USER_REQUEST>\n답변은 영어로\n</USER_REQUEST>" }),
+      makeStep(1, "PLANNER_RESPONSE", {
+        thinking: "먼저 질문을 파악한 뒤 최종 답변은 영어로 작성하자.",
+        content: "The configuration has been validated and all checks passed.",
+      }),
+    ];
+    assert.deepEqual(decideHookAction(verblessSteps), { action: "noop", reason: "ok" });
+    assert.deepEqual(decideStopAction(verblessSteps, { terminationReason: "NO_TOOL_CALL" }), {
+      action: "noop",
+      reason: "content_exempt",
+    });
+  });
 });
