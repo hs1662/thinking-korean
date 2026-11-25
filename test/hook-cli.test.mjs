@@ -669,4 +669,55 @@ describe("regression #7: dual read path and hooks.json contract", () => {
     assert.deepEqual([...matcherTools].sort(), [...PRE_TOOL_USE_UI_TOOLS].sort());
     assert.ok(entry.hooks.some((hook) => hook.command.includes("scripts/pre-tool-use.mjs")));
   });
+
+  it("uses transcriptAvailable so a readable GENERIC-only transcript still denies English UI calls", () => {
+    const dir = createTempDir("thinking-korean-pretool-avail-");
+    const transcriptPath = join(dir, "transcript_full.jsonl");
+    writeFileSync(transcriptPath, toJsonl([{ step_index: 0, type: "GENERIC", status: "DONE", content: "ok" }]), "utf8");
+    const proc = runHookSubprocess(
+      PRE_TOOL_HOOK_SCRIPT,
+      JSON.stringify({
+        hookEventName: "PreToolUse",
+        transcriptPath,
+        toolCall: { name: "update_steps", args: { steps: [{ title: "Check the build status", status: "in_progress" }] } },
+      }),
+    );
+    assert.equal(proc.status, 0);
+    const parsed = JSON.parse(proc.stdout);
+    assert.equal(parsed.decision, "deny");
+  });
+
+  it("fails open when a transcript file contains only corrupt JSONL records", () => {
+    const corruptOut = handlePreToolUse(
+      JSON.stringify({
+        hookEventName: "PreToolUse",
+        transcriptPath: "/virtual/corrupt.jsonl",
+        toolCall: { name: "update_steps", args: { steps: [{ title: "Check the build status", status: "in_progress" }] } },
+      }),
+      () => "{broken-json\n",
+    );
+    assert.deepEqual(corruptOut, { decision: "allow" });
+  });
+
+  it("assigns identical stepIndex and denied-call mapping across fast and JSONL readers when step_index is omitted", () => {
+    const dir = createTempDir("thinking-korean-noindex-");
+    const transcriptPath = join(dir, "transcript_full.jsonl");
+    const raw = toJsonl([
+      {
+        type: "PLANNER_RESPONSE",
+        thinking: "한국어 추론으로 도구 호출을 준비한다.",
+        tool_calls: [
+          { name: "read_file", args: { Path: "a.mjs" } },
+          { name: "update_steps", args: { steps: [{ title: "Check build", status: "in_progress" }] } },
+        ],
+      },
+      { type: "GENERIC", status: "DONE", content: "file content ok" },
+      { type: "GENERIC", status: "ERROR", content: `${PRE_TOOL_DENIAL_NEEDLE}: 이유` },
+    ]);
+    writeFileSync(transcriptPath, raw, "utf8");
+    const fastSteps = readTranscriptSteps(transcriptPath);
+    const textSteps = readTranscriptSteps(transcriptPath, () => raw);
+    assert.deepEqual(textSteps, fastSteps);
+    assert.equal(textSteps[1].stepIndex, 2);
+  });
 });

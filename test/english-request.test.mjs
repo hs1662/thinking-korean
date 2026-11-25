@@ -162,4 +162,10 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
     }
   });
+
+  it("matches a later Korean English-output request after an English-source description", () => {
+    assert.equal(isExplicitEnglishOutputRequest("영어로 된 문서를 요약하고 영어로 번역해 줘"), true);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 된 에러 로그를 정리한 뒤 영어로 답변해 줘"), true);
+    assert.equal(isExplicitEnglishOutputRequest("영어로 된 문서를 요약하고 한국어로 정리해 줘"), false);
+  });
 });

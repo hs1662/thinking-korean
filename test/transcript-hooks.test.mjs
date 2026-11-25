@@ -1048,4 +1048,19 @@ describe("QA F1/F3/F5: denial detection, per-call denial mapping, legacy 사고 
     );
     assert.deepEqual(thinkingOnly?.fields, ["thinking"]);
   });
+
+  it("does not exhaust the Stop retry cap when a marker appears before any planner step in the turn", () => {
+    const decision = decideStopAction(
+      [
+        makeStep(0, "USER_INPUT", { content: "구조를 분석해 줘" }),
+        makeStep(1, "SYSTEM_MESSAGE", { content: `${DRIFT_MARKER}[대상:응답] 테스트` }),
+        makeStep(2, "PLANNER_RESPONSE", {
+          thinking: "이 추론과 생각 요약은 반드시 한국어로만 작성한다. 코드를 분석한다.",
+          content: "This is a completely English final response that drifted from Korean.",
+        }),
+      ],
+      { terminationReason: "NO_TOOL_CALL" },
+    );
+    assert.equal(decision.action, "continue");
+  });
 });

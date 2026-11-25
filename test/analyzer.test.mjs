@@ -671,3 +671,36 @@ describe("regression #4: UI label proper nouns versus English task labels", () =
     }
   });
 });
+
+describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and prose headings", () => {
+  it("strips the runtime summarizer boilerplate line in thinking without exempting content", () => {
+    const boilerplate = "I'm thinking through how to approach this.";
+    const withKoreanBody = `${boilerplate}\n\n\n문제 해결을 위해 먼저 트랜스크립트 파서와 훅 어댑터 경계를 차근차근 분석한다.`;
+    const thinkingWithKorean = analyzeField("thinking", withKoreanBody);
+    assert.equal(thinkingWithKorean.status, "korean");
+    assert.equal(thinkingWithKorean.driftReason, "none");
+
+    const thinkingOnlyBoilerplate = analyzeField("thinking", `${boilerplate}\n\n\n`);
+    assert.equal(thinkingOnlyBoilerplate.status, "insufficient");
+    assert.equal(thinkingOnlyBoilerplate.driftReason, "none");
+
+    const contentBoilerplate = analyzeField("content", boilerplate);
+    assert.equal(contentBoilerplate.status, "drifted");
+  });
+
+  it("flags English UI task labels behind a multi-word Korean prefix", () => {
+    for (const label of ["체크 항목: Fix build bug", "작업 단계: Check parser state", "1단계 검토: Run unit tests"]) {
+      assert.equal(analyzeUiTexts([label]).status, "drifted", `expected drifted for: ${label}`);
+    }
+    assert.notEqual(analyzeUiTexts(["체크 항목: React Router"]).status, "drifted");
+  });
+
+  it("flags multi-function-word English prose headings inside Korean content while preserving concise rule titles", () => {
+    const proseHeading = [
+      "# Checking the build and fixing errors in this repository",
+      "",
+      "이 문장은 자연스러운 한국어 본문으로 작성되어 전체 한글 비율을 충분히 높게 유지한다.",
+    ].join("\n");
+    assert.equal(analyzeField("content", proseHeading).status, "drifted");
+  });
+});
