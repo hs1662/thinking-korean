@@ -20,7 +20,7 @@ const LONG_FLAG_RE =
 const SHORT_FLAG_RE =
   /(?<=^|[\s(\[{,:;*_'"`])-[A-Za-z](?=$|[\s)\]},;:*_'"`\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3])/g;
 const DOTFILE_RE =
-  /(?<=^|[\s(\[{,:;*_'"`])\.[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*(?=$|[\s)\]},;:*_'"`\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3])/g;
+  /(?<=^|[\s(\[{,:;*'"`])\.[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*(?=$|[\s)\]},;:*_'"`\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3])/g;
 const DOTTED_PATH_RE = /(?<![A-Za-z0-9_-])[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+\b/g;
 const SNAKE_IDENT_RE = /\b(?:_[A-Za-z0-9_]+|[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+)\b/g;
 const KEBAB_IDENT_RE = /(?<![A-Za-z0-9_-])[a-z][a-z0-9]*(?:-[a-z0-9]+)+(?![A-Za-z0-9_-])/g;
