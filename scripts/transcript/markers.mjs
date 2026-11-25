@@ -1,6 +1,7 @@
 import { isPreToolDenialStep } from "./steps.mjs";
 
 export const DRIFT_MARKER = "[한국어사고:영어이탈]";
+export const GATE_STOP_MARKER = "[증거게이트:미검증]";
 export const LEGACY_DRIFT_MARKERS = ["[thinking-korean:drift]"];
 export const FIELD_TAGS = { thinking: "추론", content: "응답", ui: "화면" };
 
@@ -161,6 +162,10 @@ export function parseDriftMarkerStep(step) {
   if (headerMatch) {
     sourceHook = detectSourceHook(headerMatch[0]);
     body = body.slice(headerMatch[0].length).trimStart();
+  }
+
+  if (body.startsWith(GATE_STOP_MARKER)) {
+    body = body.slice(GATE_STOP_MARKER.length).trimStart();
   }
 
   const matchedMarker = ALL_DRIFT_MARKERS.find((marker) => body.startsWith(marker));

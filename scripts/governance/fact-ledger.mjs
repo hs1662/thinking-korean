@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { join, posix } from "node:path";
 import { resolveTranscriptCandidates, streamTranscriptRecords } from "../hook-io.mjs";
 import { getToolCalls, isPreToolDenialStep, parseRawRecord, parseStepIndex } from "../transcript/steps.mjs";
@@ -70,6 +70,36 @@ function relativizeAgainstBase(normPath, rawBase) {
   return null;
 }
 
+function tryRealpath(rawPath) {
+  if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
+    return null;
+  }
+  try {
+    return realpathSync(rawPath.trim());
+  } catch {
+    return null;
+  }
+}
+
+function collectBaseVariants(rawBase) {
+  if (typeof rawBase !== "string" || rawBase.trim().length === 0) {
+    return [];
+  }
+  const trimmed = rawBase.trim();
+  const real = tryRealpath(trimmed);
+  return real && real !== trimmed ? [trimmed, real] : [trimmed];
+}
+
+function relativizeAgainstAnyBase(normPath, bases) {
+  for (const base of bases) {
+    const rel = relativizeAgainstBase(normPath, base);
+    if (rel !== null) {
+      return rel;
+    }
+  }
+  return null;
+}
+
 export function normalizeWorkspacePath(rawPath, cwd = "", gitRoot = "") {
   if (typeof rawPath !== "string") {
     return "";
@@ -79,13 +109,21 @@ export function normalizeWorkspacePath(rawPath, cwd = "", gitRoot = "") {
     return "";
   }
   let normalized = posix.normalize(toPosix(trimmed));
+  const gitBases = collectBaseVariants(gitRoot);
+  const cwdBases = collectBaseVariants(cwd);
   if (isAbsolutePosix(normalized)) {
-    const rel = relativizeAgainstBase(normalized, gitRoot) ?? relativizeAgainstBase(normalized, cwd);
+    const rel = relativizeAgainstAnyBase(normalized, gitBases) ?? relativizeAgainstAnyBase(normalized, cwdBases);
     if (rel !== null) {
       normalized = rel;
     }
-  } else if (cwd && gitRoot) {
-    const cwdRel = relativizeAgainstBase(stripTrailingSlashes(posix.normalize(toPosix(cwd.trim()))), gitRoot);
+  } else if (cwdBases.length > 0 && gitBases.length > 0) {
+    let cwdRel = null;
+    for (const cwdCandidate of cwdBases) {
+      cwdRel = relativizeAgainstAnyBase(stripTrailingSlashes(posix.normalize(toPosix(cwdCandidate))), gitBases);
+      if (cwdRel !== null) {
+        break;
+      }
+    }
     if (cwdRel && cwdRel !== "." && !normalized.startsWith("../")) {
       normalized = posix.normalize(`${cwdRel}/${normalized}`);
     }
@@ -359,7 +397,63 @@ function extractTail(content) {
   if (typeof content !== "string") {
     return "";
   }
-  return content.length <= RESULT_TAIL_MAX_CHARS ? content : content.slice(-RESULT_TAIL_MAX_CHARS);
+  if (content.length <= RESULT_TAIL_MAX_CHARS) {
+    return content;
+  }
+  let start = content.length - RESULT_TAIL_MAX_CHARS;
+  const code = content.charCodeAt(start);
+  if (code >= 0xdc00 && code <= 0xdfff && start + 1 < content.length) {
+    start += 1;
+  }
+  return content.slice(start);
+}
+
+export function readLatestTranscriptTokens(transcriptPath) {
+  const empty = { inputTokens: null, cacheReadTokens: null, outputTokens: null };
+  if (typeof transcriptPath !== "string" || transcriptPath.trim().length === 0) {
+    return empty;
+  }
+  const TAIL_BYTES = 64 * 1024;
+  for (const candidatePath of resolveTranscriptCandidates(transcriptPath.trim())) {
+    let fd = null;
+    try {
+      fd = openSync(candidatePath, "r");
+      const size = fstatSync(fd).size;
+      if (size <= 0) {
+        continue;
+      }
+      const readLen = Math.min(size, TAIL_BYTES);
+      const buf = Buffer.allocUnsafe(readLen);
+      const bytesRead = readSync(fd, buf, 0, readLen, size - readLen);
+      const text = buf.subarray(0, bytesRead).toString("utf8");
+      const lines = text.split("\n");
+      for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const line = lines[i].trim();
+        if (!line.includes("PLANNER_RESPONSE")) {
+          continue;
+        }
+        const parsed = parseRawRecord(line);
+        if (parsed && parsed.type === "PLANNER_RESPONSE") {
+          const tokens = extractLatestTokens(parsed);
+          if (tokens) {
+            return tokens;
+          }
+        }
+      }
+      return empty;
+    } catch {
+      continue;
+    } finally {
+      if (fd !== null) {
+        try {
+          closeSync(fd);
+        } catch {
+          // ignore close error
+        }
+      }
+    }
+  }
+  return empty;
 }
 
 function parseGateVerdictFromText(text) {

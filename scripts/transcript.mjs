@@ -16,6 +16,7 @@ export {
 } from "./transcript/ui-extractor.mjs";
 export {
   DRIFT_MARKER,
+  GATE_STOP_MARKER,
   LEGACY_DRIFT_MARKERS,
   buildCorrectionMessage,
   formatDriftMarker,

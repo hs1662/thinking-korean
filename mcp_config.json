@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "gate": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/scripts/mcp/server.mjs"],
+      "tools": {
+        "verify_completion": {
+          "eager": true
+        }
+      }
+    }
+  }
+}

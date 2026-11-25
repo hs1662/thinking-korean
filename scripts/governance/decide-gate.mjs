@@ -177,27 +177,26 @@ export function decideGate(input = {}, context = {}) {
   }
 
   if (hasCodeWrite && postWriteVerifications.length > 0) {
-    const lastVerification = postWriteVerifications[postWriteVerifications.length - 1];
-    if (!lastVerification.passed) {
-      if (lastVerification.command) {
-        details.failedVerifications.push(lastVerification.command);
+    const latestByCommand = new Map();
+    for (const exec of postWriteVerifications) {
+      const key = normalizeCommandText(exec.command) || `__step_${exec.stepIndex}`;
+      latestByCommand.set(key, exec);
+    }
+
+    const unresolvedFailures = [];
+    for (const exec of latestByCommand.values()) {
+      if (!exec.passed) {
+        unresolvedFailures.push(exec.command || "(검증 명령)");
+      }
+    }
+
+    if (unresolvedFailures.length > 0) {
+      for (const cmd of unresolvedFailures) {
+        if (!details.failedVerifications.includes(cmd)) {
+          details.failedVerifications.push(cmd);
+        }
       }
       blockedRules.push("R3_CONCEALED_FAILURE");
-    } else {
-      const claimsAnyPass = verificationRuns.some((run) => run.outcome === "pass");
-      if (claimsAnyPass) {
-        for (const run of verificationRuns) {
-          if (run.outcome !== "pass") continue;
-          const normClaim = normalizeCommandText(run.command);
-          const matchedExecs = postWriteVerifications.filter((exec) => commandMatchesExecution(normClaim, exec.command));
-          if (matchedExecs.length > 0 && !matchedExecs[matchedExecs.length - 1].passed) {
-            details.failedVerifications.push(matchedExecs[matchedExecs.length - 1].command);
-          }
-        }
-        if (details.failedVerifications.length > 0) {
-          blockedRules.push("R3_CONCEALED_FAILURE");
-        }
-      }
     }
   }
 

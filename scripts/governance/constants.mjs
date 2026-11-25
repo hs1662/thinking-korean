@@ -1,7 +1,8 @@
 import { posix } from "node:path";
+import { GATE_STOP_MARKER } from "../transcript/markers.mjs";
 
 export const GATE_TOOL_NAME = "mcp_hstack_gate_verify_completion";
-export const GATE_BLOCK_MARKER = "[증거게이트:미검증]";
+export const GATE_BLOCK_MARKER = GATE_STOP_MARKER;
 
 export const PASSING_VERDICTS = new Set([
   "PASS",

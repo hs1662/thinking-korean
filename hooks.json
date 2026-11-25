@@ -10,6 +10,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "^mcp_hstack_.*$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./scripts/pre-tool-gate.mjs",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostInvocation": [
