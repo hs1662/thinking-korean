@@ -223,6 +223,14 @@ describe("QA F2/F4: pasted material and short explicit English requests", () => 
       "영어로 옮겨 놓은 로그를 정리해 줘",
       "영어로 옮겨 둔 텍스트를 설명해 줘",
       "영어로 자연스럽게 옮겨진 에러 메시지를 설명해 줘",
+      "영어로 옮긴 거 요약 좀 해 줘",
+      "영어로 옮긴 거 요약 해 줘",
+      "영어로 옮긴 거 요약을 해 줘",
+      "영어로 옮긴 거 요약을 좀 해 줘",
+      "영어로 옮긴 이메일 설명 좀 부탁해",
+      "영어로 옮긴 답장 정리 좀 해 줘",
+      "영어로 옮겨 놓은 거 요약 좀 해 줘",
+      "영어로 옮겨 둔 거 설명 해 줘",
     ]) {
       assert.equal(isExplicitEnglishOutputRequest(input), false, `Expected false for: ${input}`);
     }
