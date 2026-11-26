@@ -333,6 +333,10 @@ describe("scripts/mcp/server.mjs stdio JSON-RPC roundtrip", () => {
     assert.equal(auditLines[0].verdict, "REJECT");
     assert.deepEqual(auditLines[0].blockedRules, ["R2_STALE_VERIFICATION"]);
     assert.equal(auditLines[0].attemptInTurn, 1);
+    assert.equal(typeof auditLines[0].metrics.ledgerScanMs, "number");
+    assert.equal(typeof auditLines[0].metrics.gitScanMs, "number");
+    assert.ok(Number.isFinite(auditLines[0].metrics.ledgerScanMs) && auditLines[0].metrics.ledgerScanMs >= 0);
+    assert.ok(Number.isFinite(auditLines[0].metrics.gitScanMs) && auditLines[0].metrics.gitScanMs >= 0);
 
     assert.equal(auditLines[1].verdict, "PASS");
     assert.equal(auditLines[1].sessionRole, "main");
@@ -341,10 +345,16 @@ describe("scripts/mcp/server.mjs stdio JSON-RPC roundtrip", () => {
     assert.equal(auditLines[1].metrics.cacheReadTokens, 4000);
     assert.equal(auditLines[1].metrics.unverifiedScopeCount, 0);
     assert.equal(auditLines[1].metrics.fillerUnverifiedCount, 1);
+    assert.equal(typeof auditLines[1].metrics.ledgerScanMs, "number");
+    assert.equal(typeof auditLines[1].metrics.gitScanMs, "number");
+    assert.ok(Number.isFinite(auditLines[1].metrics.ledgerScanMs) && auditLines[1].metrics.ledgerScanMs >= 0);
+    assert.ok(Number.isFinite(auditLines[1].metrics.gitScanMs) && auditLines[1].metrics.gitScanMs >= 0);
 
     assert.equal(auditLines[2].verdict, "SKIPPED_NO_SESSION");
     assert.equal(auditLines[2].metrics.unverifiedScopeCount, 0);
     assert.equal(auditLines[2].metrics.fillerUnverifiedCount, 0);
+    assert.equal(auditLines[2].metrics.ledgerScanMs, null);
+    assert.equal(auditLines[2].metrics.gitScanMs, null);
   });
 
   it("honors HSTACK_SCHEMA_REGISTER=audit with [감사 기각] header", async () => {

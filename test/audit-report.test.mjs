@@ -353,6 +353,58 @@ describe("audit-report parser and aggregator", () => {
     assert.ok(table.includes("ERROR=1"));
     assert.ok(table.includes("MISSING_VERDICT=1"));
   });
+
+  it("aggregates scan latency across canonical metrics, nested timings, and legacy/alias field layouts", () => {
+    const parsed = parseAuditLines(
+      [
+        JSON.stringify({
+          ts: "2026-11-26T01:00:00.000Z",
+          event: "gate_verify",
+          verdict: "PASS",
+          metrics: { ledgerScanMs: 12.4, gitScanMs: 8.2 },
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T01:01:00.000Z",
+          event: "gate_verify",
+          verdict: "PASS",
+          timings: { ledgerScanMs: 22.6, gitScanMs: 18.8 },
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T01:02:00.000Z",
+          event: "gate_verify",
+          verdict: "PASS",
+          metrics: { timings: { ledger_scan_ms: 30, git_scan_ms: 25 } },
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T01:03:00.000Z",
+          event: "gate_verify",
+          verdict: "PASS",
+          ledger_scan_ms: 40,
+          git_scan_ms: 32,
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T01:04:00.000Z",
+          event: "gate_verify",
+          verdict: "PASS",
+          scanMs: { ledger: 50, git: 40 },
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T01:05:00.000Z",
+          event: "gate_verify",
+          verdict: "SKIPPED_NO_SESSION",
+          metrics: { ledgerScanMs: null, gitScanMs: null },
+        }),
+      ].join("\n"),
+    );
+
+    const summary = summarizeAuditRecords(parsed, { filePath: "/tmp/audit.jsonl", fileExists: true });
+    assert.equal(summary.scanLatencyMs.ledgerScanMs.count, 5);
+    assert.equal(summary.scanLatencyMs.ledgerScanMs.p50, 30);
+    assert.equal(summary.scanLatencyMs.ledgerScanMs.max, 50);
+    assert.equal(summary.scanLatencyMs.gitScanMs.count, 5);
+    assert.equal(summary.scanLatencyMs.gitScanMs.p50, 25);
+    assert.equal(summary.scanLatencyMs.gitScanMs.max, 40);
+  });
 });
 
 describe("audit-report CLI subprocess execution", () => {
