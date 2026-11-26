@@ -37,6 +37,8 @@ const SUBAGENT_SENDER_MSG_RE = /sender=([0-9a-f-]{8,64})\b/i;
 const SYSTEM_WRAPPER_LINE_RE = /^<\/?(?:SYSTEM_MESSAGE|USER_REQUEST|ADDITIONAL_METADATA)>$/i;
 const AUDITOR_MARKER_LINE_RE = /^\[hstack:독립감사\]$/;
 const WORKER_MARKER_LINE_RE = /^\[hstack:격리작업\]$/;
+const INJECTED_CONTEXT_LINE_RE = /^(?:작업 경로:|세션 기록 경로:|현재 턴 시작 스텝:|-\s*작업 디렉터리:)/;
+const ALLOWED_SUBAGENT_SYSTEM_SOURCES = new Set(["SYSTEM"]);
 
 const SHELL_WRAPPERS = new Set(["sudo", "time", "env", "command", "nohup"]);
 const WRAPPER_FLAGS_WITH_ARG = {
@@ -708,27 +710,103 @@ function isAsyncSubagentLaunchAck(text) {
   );
 }
 
-export function detectSessionRoleFromUserInput(content) {
+function normalizeRoleLines(content) {
   if (typeof content !== "string" || content.length === 0) {
-    return "main";
+    return [];
   }
-  const lines = content
+  return content
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !SYSTEM_WRAPPER_LINE_RE.test(line));
+}
+
+export function classifySessionRoleFromText(content, { requireBlockStructure = false } = {}) {
+  const lines = normalizeRoleLines(content);
   if (lines.length === 0) {
     return "main";
   }
   const tailStart = Math.max(0, lines.length - 6);
+  let detected = "main";
   for (let i = tailStart; i < lines.length; i += 1) {
+    let candidate = null;
     if (AUDITOR_MARKER_LINE_RE.test(lines[i])) {
+      candidate = "auditor";
+    } else if (WORKER_MARKER_LINE_RE.test(lines[i])) {
+      candidate = "worker";
+    }
+    if (!candidate) {
+      continue;
+    }
+    if (requireBlockStructure) {
+      const remaining = lines.slice(i + 1);
+      const validBlock = remaining.length === 0 || remaining.every((line) => INJECTED_CONTEXT_LINE_RE.test(line));
+      if (!validBlock) {
+        continue;
+      }
+    }
+    if (candidate === "auditor") {
       return "auditor";
     }
-    if (WORKER_MARKER_LINE_RE.test(lines[i])) {
-      return "worker";
+    detected = "worker";
+  }
+  return detected;
+}
+
+export function detectSessionRoleFromUserInput(content) {
+  return classifySessionRoleFromText(content, { requireBlockStructure: false });
+}
+
+export function detectSessionRoleFromHeaderStep(step) {
+  if (!step || typeof step !== "object") {
+    return "main";
+  }
+  const content = typeof step.content === "string" ? step.content : "";
+  if (content.length === 0) {
+    return "main";
+  }
+  if (step.type === "USER_INPUT") {
+    return classifySessionRoleFromText(content, { requireBlockStructure: false });
+  }
+  if (step.type === "SYSTEM_MESSAGE") {
+    const rawSource = typeof step.source === "string" ? step.source.trim() : "";
+    if (rawSource.length > 0 && !ALLOWED_SUBAGENT_SYSTEM_SOURCES.has(rawSource)) {
+      return "main";
     }
+    return classifySessionRoleFromText(content, { requireBlockStructure: true });
   }
   return "main";
+}
+
+export function detectSessionRoleFromHeaderSteps(steps) {
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return "main";
+  }
+  let seenFirstUserInput = false;
+  let role = "main";
+  for (const step of steps) {
+    if (!step || typeof step !== "object") {
+      continue;
+    }
+    if (step.type === "PLANNER_RESPONSE") {
+      break;
+    }
+    if (step.type === "USER_INPUT") {
+      if (seenFirstUserInput) {
+        continue;
+      }
+      seenFirstUserInput = true;
+    } else if (step.type !== "SYSTEM_MESSAGE") {
+      continue;
+    }
+    const candidate = detectSessionRoleFromHeaderStep(step);
+    if (candidate === "auditor") {
+      return "auditor";
+    }
+    if (candidate === "worker" && role === "main") {
+      role = "worker";
+    }
+  }
+  return role;
 }
 
 export function readLatestTranscriptTokens(transcriptPath) {
@@ -854,7 +932,20 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
   const ledger = createEmptyLedger(true);
   let pendingCalls = [];
   let seenFirstUserInput = false;
+  let seenFirstPlannerResponse = false;
   const asyncAuditsByConversationId = new Map();
+
+  const applyHeaderSessionRole = (record) => {
+    if (seenFirstPlannerResponse || ledger.sessionRole === "auditor") {
+      return;
+    }
+    const candidate = detectSessionRoleFromHeaderStep(record);
+    if (candidate === "auditor") {
+      ledger.sessionRole = "auditor";
+    } else if (candidate === "worker" && ledger.sessionRole === "main") {
+      ledger.sessionRole = "worker";
+    }
+  };
 
   const resetTurn = (stepIndex) => {
     ledger.turnStartStepIndex = stepIndex;
@@ -907,15 +998,14 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
       if (parsed.type === "USER_INPUT") {
         if (!seenFirstUserInput) {
           seenFirstUserInput = true;
-          ledger.sessionRole = detectSessionRoleFromUserInput(
-            typeof parsed.content === "string" ? parsed.content : "",
-          );
+          applyHeaderSessionRole(parsed);
         }
         resetTurn(stepIndex);
         return true;
       }
 
       if (parsed.type === "SYSTEM_MESSAGE") {
+        applyHeaderSessionRole(parsed);
         const msgContent = typeof parsed.content === "string" ? parsed.content : "";
         if (msgContent.includes(GATE_STOP_MARKER)) {
           ledger.gateBlockedThisTurn = true;
@@ -939,6 +1029,7 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
       }
 
       if (parsed.type === "PLANNER_RESPONSE") {
+        seenFirstPlannerResponse = true;
         pendingCalls = [];
         const tokens = extractLatestTokens(parsed);
         if (tokens) {

@@ -202,7 +202,7 @@ describe("decideGate independent audit escalation, R8, stale invalidation, E9/E1
     assert.ok(res.receiptText.includes("독립 코드 감사관"));
   });
 
-  it("skips escalation when auditEscalation is off or manual, or sessionRole is auditor", () => {
+  it("skips escalation when auditEscalation is off or manual, or sessionRole is auditor or worker", () => {
     for (const mode of ["off", "manual"]) {
       const res = decideGate(makeInput(), {
         ledger: makeLedger(),
@@ -213,12 +213,14 @@ describe("decideGate independent audit escalation, R8, stale invalidation, E9/E1
       assert.equal(res.verdict, "PASS");
     }
 
-    const auditorRes = decideGate(makeInput(), {
-      ledger: makeLedger({ sessionRole: "auditor" }),
-      gitLedger: makeGitLedger(),
-      testInfra: { hasTestSuite: true, indicators: ["test/"] },
-    });
-    assert.equal(auditorRes.verdict, "PASS");
+    for (const role of ["auditor", "worker"]) {
+      const roleRes = decideGate(makeInput(), {
+        ledger: makeLedger({ sessionRole: role }),
+        gitLedger: makeGitLedger(),
+        testInfra: { hasTestSuite: true, indicators: ["test/"] },
+      });
+      assert.equal(roleRes.verdict, "PASS");
+    }
   });
 
   it("blocks with R8_AUDIT_REJECTED when latest post-write audit rejected and invalidates stale PASS after code rewrite", () => {

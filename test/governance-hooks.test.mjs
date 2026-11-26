@@ -329,11 +329,13 @@ describe("scripts/mcp/server.mjs stdio JSON-RPC roundtrip", () => {
     const auditLines = readFileSync(join(dataDir, "audit.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(auditLines.length, 3);
     assert.equal(auditLines[0].event, "gate_verify");
+    assert.equal(auditLines[0].sessionRole, "main");
     assert.equal(auditLines[0].verdict, "REJECT");
     assert.deepEqual(auditLines[0].blockedRules, ["R2_STALE_VERIFICATION"]);
     assert.equal(auditLines[0].attemptInTurn, 1);
 
     assert.equal(auditLines[1].verdict, "PASS");
+    assert.equal(auditLines[1].sessionRole, "main");
     assert.equal(auditLines[1].attemptInTurn, 2);
     assert.equal(auditLines[1].metrics.inputTokens, 5100);
     assert.equal(auditLines[1].metrics.cacheReadTokens, 4000);

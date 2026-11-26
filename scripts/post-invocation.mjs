@@ -2,21 +2,12 @@
 
 import { appendAuditRecord, readGovernanceConfig } from "./governance/audit-log.mjs";
 import { DEFAULT_POLLUTION_THRESHOLDS } from "./governance/constants.mjs";
-import { detectSessionRoleFromUserInput, readFactLedger } from "./governance/fact-ledger.mjs";
+import { detectSessionRoleFromHeaderSteps, readFactLedger } from "./governance/fact-ledger.mjs";
 import { updateSessionPollutionState } from "./governance/handoff-store.mjs";
 import { isDirectExecution, loadHookContext, readTranscriptSteps, runHookCli } from "./hook-io.mjs";
 import { decideHookAction } from "./transcript.mjs";
 
 export { readTranscriptSteps };
-
-function isAuditorSessionSteps(steps) {
-  for (const step of steps) {
-    if (step?.type === "USER_INPUT") {
-      return detectSessionRoleFromUserInput(typeof step.content === "string" ? step.content : "") === "auditor";
-    }
-  }
-  return false;
-}
 
 function tryLogPostInvocationTelemetry(context, decision) {
   try {
@@ -25,12 +16,12 @@ function tryLogPostInvocationTelemetry(context, decision) {
     const conversationId = typeof rawConversationId === "string" ? rawConversationId.trim() : "";
     const latestStep = steps[steps.length - 1];
     const cwd = typeof payload.cwd === "string" ? payload.cwd.trim() : "";
-    const isAuditor = isAuditorSessionSteps(steps);
     const ledger = transcriptPath ? readFactLedger(transcriptPath, cwd, "") : null;
+    const sessionRole = ledger?.transcriptAvailable ? ledger.sessionRole : detectSessionRoleFromHeaderSteps(steps);
     const tokens = ledger?.latestTokens ?? { inputTokens: null, cacheReadTokens: null, outputTokens: null };
 
     let pollutionState = null;
-    if (!isAuditor && conversationId && ledger?.sessionRole !== "auditor") {
+    if (sessionRole !== "auditor" && conversationId) {
       const cfg = readGovernanceConfig();
       const thresholds = {
         ...DEFAULT_POLLUTION_THRESHOLDS,
