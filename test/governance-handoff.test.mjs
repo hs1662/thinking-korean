@@ -324,9 +324,101 @@ describe("MCP manage_handoff stdio roundtrip and pollution alert integration", (
       assert.ok(auditLines.some((r) => r.eventType === "handoff_save"));
       assert.ok(auditLines.some((r) => r.eventType === "handoff_load"));
       assert.ok(auditLines.some((r) => r.eventType === "gate_verify"));
+
+      // M6: missing _session.cwd must return an error instead of falling back to process.cwd()
+      const missingSessionRes = await client.request("tools/call", {
+        name: "manage_handoff",
+        arguments: {
+          action: "save",
+          objective: "세션 누락 테스트",
+          verified_facts: [],
+          failed_approaches: [],
+          remaining_tasks: [],
+        },
+      });
+      assert.equal(missingSessionRes.result.isError, false);
+      assert.ok(missingSessionRes.result.content[0].text.includes("[핸드오프 처리 오류]"));
     } finally {
       await client.close();
     }
+  });
+
+  it("Checkpoint 4 regressions M6/L2/L3: detects dirty file content drift, resets per-turn pollution counters, and ignores URLs in verified_facts", () => {
+    const dataDir = createTempDir("hstack-cp4-handoff-");
+    const repo = initTempGitRepo("hstack-cp4-handoff-repo-");
+    writeFileSync(join(repo, "src", "app.mjs"), "export const v = 2;\n", "utf8");
+    const gitBefore = {
+      gitAvailable: true,
+      gitRoot: repo,
+      gitDirtyFiles: new Set(["src/app.mjs"]),
+      diffNumstat: new Map([["src/app.mjs", { added: 1, deleted: 1 }]]),
+      gitBranch: "main",
+      gitHead: "abc1234",
+    };
+
+    const { snapshot } = saveHandoffSnapshot({
+      input: {
+        objective: "내용 변경 감지 테스트",
+        verified_facts: [
+          "참고 문서 https://example.com/docs/guide.html 의 명세를 확인했습니다.",
+        ],
+        failed_approaches: [],
+        remaining_tasks: ["후속 확인"],
+      },
+      ledger: {
+        transcriptAvailable: true,
+        sessionReadFiles: new Set(["src/app.mjs"]),
+        turnWrittenFiles: new Set(["src/app.mjs"]),
+        turnExecutions: [],
+        turnFailedExecutionCount: 0,
+        fileEditCounts: new Map([["src/app.mjs", 1]]),
+        latestTokens: { inputTokens: 1000 },
+      },
+      gitLedger: gitBefore,
+      cwd: repo,
+      conversationId: "conv-m6",
+      dataDir,
+    });
+    // L3: URL must not be flagged as unread local file
+    assert.equal(snapshot.unverifiedWarnings.length, 0);
+
+    // M6: modifying same dirty file's content must trigger treeChanged even with same gitHead and dirtyFiles list
+    writeFileSync(join(repo, "src", "app.mjs"), "export const v = 999;\nexport const extra = 1;\n", "utf8");
+    const loaded = loadHandoffSnapshot({
+      cwd: repo,
+      gitLedger: {
+        gitAvailable: true,
+        gitRoot: repo,
+        gitDirtyFiles: new Set(["src/app.mjs"]),
+        gitHead: "abc1234",
+      },
+      dataDir,
+    });
+    assert.equal(loaded.ok, true);
+    assert.equal(loaded.treeChanged, true);
+    assert.ok(loaded.formattedText.includes("[작업 트리 변동 감지]"));
+
+    // L2: new turn (changed turnStartStepIndex) must reset per-turn failedExecutionsInTurn and pollutionAlert when tokens are below threshold
+    updateSessionPollutionState({
+      conversationId: "conv-turn-reset",
+      turnStartStepIndex: 0,
+      inputTokens: 10_000,
+      failedExecutionsInTurn: 5,
+      maxSingleFileEdits: 1,
+      dataDir,
+    });
+    assert.equal(readSessionState("conv-turn-reset", dataDir)?.pollutionAlert, true);
+
+    const nextTurn = updateSessionPollutionState({
+      conversationId: "conv-turn-reset",
+      turnStartStepIndex: 12,
+      inputTokens: 12_000,
+      failedExecutionsInTurn: 0,
+      maxSingleFileEdits: 0,
+      dataDir,
+    });
+    assert.equal(nextTurn.failedExecutionsInTurn, 0);
+    assert.equal(nextTurn.pollutionAlert, false);
   });
 
   it("updates pollution state on post-invocation for main sessions and skips auditor sessions", () => {
