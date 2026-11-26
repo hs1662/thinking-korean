@@ -15,7 +15,7 @@ import { resolveAuditEscalationMode } from "../governance/risk-classifier.mjs";
 import { isDirectExecution } from "../hook-io.mjs";
 
 const PROTOCOL_VERSION_DEFAULT = "2024-11-05";
-const SERVER_INFO = { name: "hstack-gate", version: "2.1.1" };
+const SERVER_INFO = { name: "hstack-gate", version: "2.1.2" };
 const PUBLIC_ARG_KEYS = new Set([
   "modified_files",
   "inspected_files",

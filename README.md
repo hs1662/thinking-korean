@@ -1,83 +1,168 @@
-# Thinking Korean
+# hstack
 
 [한국어](README.ko.md)
 
-`thinking-korean` keeps Antigravity CLI `thinking` traces, user-facing tool UI labels (step checklists, tool summaries, subagent roles, and prompts), and responses in natural conversational Korean with an always-on Korean rule plus `PreToolUse`, `PostInvocation`, and `Stop` drift-recovery hooks. It requires Node.js 18 or newer and has zero npm dependencies.
+`hstack` (v2.1.2) is an Antigravity CLI governance plugin built on Node.js 18+ ESM with zero npm dependencies. It combines three layers in one plugin: a Korean-native thinking, UI, and response guard, a deterministic evidence-grounded completion gate, and an isolation plane with risk-tiered independent code auditing and fact-distilled cross-session handoff.
 
-## Install
+## Architecture
 
-Install the plugin from GitHub or from a local checkout.
+`hstack` organizes its rules, hooks, eager MCP tools, subagents, and skills into three layers.
+
+### Layer 1: Korean-native thinking, UI, and response guard
+
+- `rules/AGENTS.md` is an always-on, pure-Korean rule file (zero ASCII letters) loaded into `<user_rules>`. It fixes Korean as the model's native language across internal reasoning, thought summaries, final responses, and user-facing tool UI labels. It caps internal reasoning at 2 to 3 short paragraphs (at most 2 sentences per paragraph, 6 sentences total) with a Korean summary-language declaration at the start of each paragraph, while keeping file names, paths, code identifiers, commands, proper nouns, and everyday English technical terms verbatim inside natural Korean replies.
+- `PreToolUse` (`scripts/pre-tool-use.mjs`) checks pure UI display tools (`update_steps`, `ask_question`, `todo_write`, `task_create`, `task_update`, `update_plan`) before they render. English step titles or option labels receive `decision: "deny"` with a Korean correction reason, capped at one retry per turn. Short technical proper names such as `React Router` or `Docker Compose` are allowed.
+- `PostInvocation` (`scripts/post-invocation.mjs`) scans `transcript_full.jsonl` after each model invocation and evaluates `thinking`, `content`, and user-facing `tool_calls` text through `scripts/analyzer.mjs`. The stripper (`scripts/analyzer/stripper.mjs`) excludes closed fenced code blocks, inline code spans, paths, flags, identifiers, XML tags, `http://`, `https://`, `ftp://`, `file://`, and `conversation://` URLs, and server-side summarizer boilerplate while catching English prose, clauses, and English UI task labels. Drift triggers a non-blocking Korean `[한국어사고:영어이탈]` `systemMessage` with recovery-aware backoff (`2` consecutive unrecovered cap for `thinking`-only or `ui`-only drift). Explicit translation or foreign-language requests in `USER_INPUT` exempt `content` while keeping `thinking` and checklists in Korean.
+- Unified `Stop` (`scripts/stop.mjs`) runs before a normal `NO_TOOL_CALL` turn ends. It checks both completion-gate compliance and Korean `content` drift in one orchestrator (global cap: 2 executions per turn). It returns `decision: "continue"` with `continue_gate`, `continue_lang`, or `continue_dual` when needed, skips auditor sessions and turns with pending async audits, and fails open (`{}`) on errors or abnormal termination.
+
+### Layer 2: deterministic evidence-grounded completion gate
+
+- Eager MCP server (`mcp_config.json`, `scripts/mcp/server.mjs`) exposes `mcp_hstack_gate_verify_completion` (`verify_completion`) without requiring schema discovery turns.
+- `PreToolUse` (`scripts/pre-tool-gate.mjs`) intercepts `^mcp_hstack_.*$` calls to return `decision: "auto_approve"`, set a Korean `toolSummary`, and inject hidden `_session` metadata (`conversationId`, `transcriptPath`, `cwd`) stripped before schema validation.
+- `scripts/governance/fact-ledger.mjs` and `scripts/governance/decide-gate.mjs` cross-check claimed `modified_files`, `inspected_files`, `verification_runs`, `unverified_scope`, and `self_assessment` against transcript read/write/execution history and Git working tree state (`git status --porcelain`, `git diff --numstat`).
+- External MCP verification tools such as `mcp_agy-fast_fast_run_checks` (and `mcp_agy-fast_fast_apply_edits` for writes) are recognized directly in the ledger alongside `run_command`.
+- Gate rules (`R1` through `R7`) and exceptions (`E1` through `E8`):
+	- `R1_UNREAD_INSPECTED`: blocks when `inspected_files` lists a file never read in the session (newly created files via `write_file`/`write_to_file` count as read).
+	- `R2_STALE_VERIFICATION`: blocks when code files were modified and no verification command ran after the last code write. Exempt for doc/asset-only edits (`E2`, `.md`, `.txt`, `.rst`, `.adoc`, `.svg`, image assets, `docs/`, `LICENSE`), or downgraded to warning when no test infrastructure exists and `not_applicable` with a concrete reason and non-empty `unverified_scope` are provided (`E1`).
+	- `R3_CONCEALED_FAILURE`: blocks when any post-write verification failure remains unresolved by a subsequent passing run of the same command or covering segment.
+	- `R4_UNREPORTED_MODIFIED`: blocks when a file modified in the turn and still dirty in Git is omitted from `modified_files` (reverted/clean files are exempt under `E3`).
+	- `R5_FABRICATED_COMMAND`: blocks when a `verification_runs` entry claims `outcome: "pass"` with no matching post-write passing execution (supports shell segments, `run_command`, and `mcp_agy-fast_fast_run_checks` aliases/labels).
+	- `R6_PHANTOM_MODIFIED`: warns when a claimed modified file is absent from both turn writes and Git dirty state, and blocks when no turn writes exist while Git is available.
+	- `R7_HEDGE_DETECTED`: warns when `self_assessment` contains 2 or more hedging expressions (`scripts/governance/hedge-detector.mjs`) while effective `unverified_scope` is empty (filler entries such as `"없음"` or `"none"` are filtered out).
+	- Additional exceptions include session-missing skip (`SKIPPED_NO_SESSION`), repeated-reject graceful degradation (`PASS_WITH_DEGRADATION` after 3 prior rejects with explicit `unverified_scope` and no passing claims), auditor-session bypass, and subagent role isolation.
+
+### Layer 3: isolation plane (independent auditing and context handoff)
+
+- Risk-tiered independent code auditor (`agents/hstack-auditor.md`, `scripts/governance/risk-classifier.mjs`):
+	- `classifyRisk` assigns `TIER_1` when a code change touches a sensitive path (`sensitive_path`, such as `auth`, `security`, `crypto`, `token`, `session`, `migrations`, `hooks.json`, `mcp_config.json`, `scripts/mcp/`, `scripts/governance/`), modifies 4 or more code files (`large_file_count`), or changes 150 or more code lines (`large_diff_lines`). All other changes are `TIER_0`.
+	- On `TIER_1` code edits in `main` sessions with `auditEscalation: "auto"`, `verify_completion` returns `ESCALATE_AUDIT_REQUIRED` until a post-write `hstack-auditor` read-only review completes and ends with `[감사 판정: 통과]` or `[감사 판정: 반려]`.
+	- `PreToolUse` (`scripts/pre-tool-gate.mjs`) intercepts `invoke_subagent` for `hstack-auditor` and `hstack-worker` to inject Korean role labels, session role markers (`[hstack:독립감사]`, `[hstack:격리작업]`), workspace path, and transcript anchors.
+	- Rule `R8` (`R8_AUDIT_REJECTED`, `R8_AUDIT_ERROR`) blocks when the auditor rejects or errors. Exceptions `E9` and `E10` degrade to `PASS_WITH_AUDIT_DEGRADATION` after 2 auditor rejections or 2 consecutive trailing auditor errors when `unverified_scope` records the open risks, and `worker`/`auditor` subagent sessions do not recursively escalate.
+- Fact-distilled cross-session handoff (`skills/hstack-handoff/SKILL.md`, `agents/hstack-worker.md`, `scripts/governance/handoff-store.mjs`):
+	- Eager MCP tool `mcp_hstack_gate_manage_handoff` (`manage_handoff`) supports `save`, `load`, and `list` actions per workspace key (`computeWorkspaceKey`), combining distilled facts (`objective`, `verified_facts`, `failed_approaches`, `remaining_tasks`, `open_risks`) with machine evidence (Git branch, HEAD, dirty files, read/written files, verification runs) and flagging stale working trees on load.
+	- Context pollution tracking (`updateSessionPollutionState` in `scripts/post-invocation.mjs`) monitors `inputTokens`, failed executions in turn, and repeated single-file edit churn, appending a non-blocking `[컨텍스트 열화 주의]` notice to gate receipts when thresholds trip.
+
+## Install and upgrade
+
+### Fresh install
+
+Install `hstack` from GitHub or a local checkout, then start a new Antigravity CLI session.
 
 ```sh
 agy plugin install https://github.com/hs1662/thinking-korean
 agy plugin install .
 ```
 
-Run `/thinking` inside an Antigravity CLI session to display `thinking` traces.
+Run `/thinking` inside an Antigravity CLI session to view `thinking` traces.
 
-Turn the plugin off or back on at any time with these commands.
+### Upgrade from `thinking-korean`
+
+Remove the legacy `thinking-korean` plugin first so duplicate hooks do not run, install `hstack`, and start a new `agy` session.
 
 ```sh
-agy plugin disable thinking-korean
-agy plugin enable thinking-korean
+agy plugin uninstall thinking-korean
+agy plugin install https://github.com/hs1662/thinking-korean
 ```
 
-## How it works
+To upgrade an existing local `hstack` installation while preserving `plugin_data/hstack/` (`audit.jsonl`, `config.json`, handoff snapshots):
 
-The plugin pairs one always-on rule file with three lifecycle hooks (`PreToolUse`, `PostInvocation`, and `Stop`).
+```sh
+agy plugin uninstall hstack
+agy plugin install /path/to/thinking-korean
+```
 
-- `rules/AGENTS.md` loads into `<user_rules>` as a pure-Korean rule file. It anchors Korean as the model's sole first and native language for internal reasoning, thought summaries, final responses, and all user-visible tool UI labels. It places an explicit Korean summary-language declaration at the start of every reasoning paragraph, keeps internal reasoning compressed to 2 to 3 short paragraphs (at most 2 sentences per paragraph, 6 sentences total) without code snippets, parenthetical English glosses, numbered or bulleted lists, or long draft breakdowns, and moves detailed technical walkthroughs directly to tool calls and the final reply so server-side thought summarizers neither flip mid-chunk on long audits nor leak meta-instructions on short confirmation steps. Final replies keep file names, paths, code identifiers, commands, proper nouns, and everyday English technical terms verbatim inside natural Korean sentences while disallowing English sentences and clauses.
-- `PreToolUse` in `hooks.json` runs `scripts/pre-tool-use.mjs` before pure UI display tools (`update_steps`, `ask_question`, `todo_write`, `task_create`, `task_update`, `update_plan`). If step titles or prompt labels drift into English, it returns `decision: "deny"` with a Korean correction reason before English checklists render on screen, capped at one stateless retry per turn so execution never loops.
-- `PostInvocation` in `hooks.json` runs `scripts/post-invocation.mjs` after model invocation and tool execution complete to scan `transcript_full.jsonl` and inspect the latest `PLANNER_RESPONSE` (`thinking`, `content`, and user-facing `tool_calls` UI text). The analyzer (`scripts/analyzer.mjs`) permits embedded 1-to-3-word non-prose English technical terms inside Korean sentences alongside closed code fences, paths, identifiers, and the single-line English boilerplate injected by the server-side thought summarizer in `thinking`, while catching English sentences (including 4-to-7-word inline English sentences appended to Korean lines), contractions, 4-plus-word English runs, English paragraphs, unclosed-fence prose leaks, and English UI labels (including Title Case task summaries and subagent roles). When drift appears, the hook injects a non-blocking Korean `[한국어사고:영어이탈]` `systemMessage` with stateless recovery-aware backoff:
-  - Recovery resets failure counts and cooldown immediately.
-  - Persistent `thinking`-only or `ui`-only drift backs off and stops after a consecutive-failure cap (`2` unrecovered injections) until Korean output resumes, preventing infinite context pollution on stubborn models or summarizers.
-  - User-facing `content` drift uses an independent budget, and explicit foreign-language or translation requests in `USER_INPUT` (including dotted filenames/versions, Japanese/Chinese, and clause-scoped negations or Korean-reasoning clauses) exempt `content` while keeping `thinking` and step checklists in Korean.
-- `Stop` in `hooks.json` runs `scripts/stop.mjs` before a normal `NO_TOOL_CALL` turn ends. If final user `content` drifted into English without an explicit English or translation request, it returns `decision: "continue"` once to recover the response in Korean. Earlier `thinking`-only or `ui`-only markers in the same turn do not suppress `Stop` recovery, and it passes through when `continuationActive` is true, when termination is abnormal, or when `content` is already Korean.
-- Fail-open contract: `PreToolUse` returns `{"decision":"allow"}` both when it allows a call and on read, parse, or unexpected errors. `PostInvocation` and `Stop` return `{}` when they take no action and on the same errors.
+Start a new `agy` session after every install or upgrade so updated hooks, rules, agents, skills, and MCP servers load cleanly.
 
-Recovery details:
+## Configuration reference
 
-- Injected messages start with a structured marker that names the drifted fields, such as `[한국어사고:영어이탈][대상:추론+응답]` (`추론` = `thinking`, `응답` = `content`, `화면` = `ui`). The plain `[한국어사고:영어이탈]` marker and the legacy `[thinking-korean:drift]` marker are still recognized.
-- After a `PreToolUse` denial, `PostInvocation` excludes only the denied tool call indexes so sibling non-denied tool calls with English UI text (such as `run_command` `toolSummary` or `invoke_subagent` `Role`) are still caught.
-- Korean recovery resets the retry budget: a Korean call of the same UI tool that goes through resets the `PreToolUse` retry count, and Korean output resets the `PostInvocation` failure count and cooldown for that field.
-- UI labels made only of short technical proper names (up to 4 Title Case words, acronyms, or versions), such as `React Router` or `Docker Compose`, are allowed and not treated as English drift.
+`hstack` reads optional JSON settings from:
 
-Module layout:
+```text
+$ANTIGRAVITY_APP_DATA_DIR/plugin_data/hstack/config.json
+```
 
-- `scripts/analyzer.mjs` is the analyzer entry point and re-exports the modules in `scripts/analyzer/` (`constants.mjs`, `lexicon.mjs`, `lines.mjs`, `prose-rules.mjs`, `stripper.mjs`, `ui.mjs`).
-- `scripts/transcript.mjs` is the transcript entry point and re-exports the modules in `scripts/transcript/` (`steps.mjs`, `english-request.mjs`, `ui-extractor.mjs`, `markers.mjs`, `trackers.mjs`, `decide-post.mjs`, `decide-pre-tool.mjs`, `decide-stop.mjs`).
-- `scripts/hook-io.mjs` holds the shared stdin, transcript reading, and JSON output code used by the hook entry points `scripts/pre-tool-use.mjs`, `scripts/post-invocation.mjs`, and `scripts/stop.mjs`.
+When `PLUGIN_DATA` or `HSTACK_DATA_DIR` is set, that directory takes precedence. Default app-data path on Linux is `~/.gemini/antigravity-cli/plugin_data/hstack/config.json`.
 
-## Model behavior
+### Supported `config.json` keys
 
-Plugins cannot rewrite tokens already streamed or set a provider thought-language parameter, so hook recovery takes effect on the next model call. Isolated live runs measured these results:
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `schemaRegister` | `"neutral" \| "audit"` | `"neutral"` | Selects tool schema and receipt copy register. |
+| `auditEscalation` | `"auto" \| "manual" \| "off"` | `"auto"` | Controls `TIER_1` independent auditor escalation. `"auto"` enforces escalation on `TIER_1` edits in `main` sessions; `"manual"` and `"off"` skip automatic escalation. |
+| `riskThresholds.minCodeFiles` | positive integer | `4` | Minimum modified code files to classify as `TIER_1` (`large_file_count`). |
+| `riskThresholds.minChangedLines` | positive integer | `150` | Minimum added plus deleted code lines to classify as `TIER_1` (`large_diff_lines`). |
+| `sensitivePatterns` | `string[]` (max 50) | Built-in list | Optional custom case-insensitive regex strings overriding default sensitive path patterns. |
+| `pollutionThresholds.inputTokensWarning` | integer | `120000` | Input token threshold for `pollutionAlert`. |
+| `pollutionThresholds.failedExecutionsInTurn` | integer | `4` | Failed execution count per turn threshold for `pollutionAlert`. |
+| `pollutionThresholds.repeatedFileEditChurn` | integer | `5` | Repeated edits to a single file per turn threshold for `pollutionAlert`. |
 
-- `gemini-4-neon-xhigh` (current code) passed all 5 isolated cases (`korean-reasoning`, `tool-code-analysis`, `heavy-english-skill-tools`, `explicit-translation`, and `todo-checklist`) with `driftInjections: 0`, `preToolDenials: 0`, and `93.65%` to `100.0%` weighted Hangul thinking. `explicit-translation` reported `contentExemptionPassed: true`, and `todo-checklist` actually executed `update_steps` (`requiredToolsExecuted: { update_steps: true }`). Command: `node test/verify-live.mjs --models gemini-4-neon-xhigh --cases korean-reasoning,tool-code-analysis,heavy-english-skill-tools,explicit-translation,todo-checklist --timeout 180`.
+Example `config.json`:
 
-The results below come from earlier runs on a previous code revision with the 4-case set (no `todo-checklist`) and have not been re-run on the current code:
+```json
+{
+	"schemaRegister": "neutral",
+	"auditEscalation": "auto",
+	"riskThresholds": {
+		"minCodeFiles": 4,
+		"minChangedLines": 150
+	},
+	"pollutionThresholds": {
+		"inputTokensWarning": 120000,
+		"failedExecutionsInTurn": 4,
+		"repeatedFileEditChurn": 5
+	}
+}
+```
 
-- `gemini-3.8-flash-high` passed all 4 isolated cases across two consecutive runs with zero hook injections and `97.4%` to `100.0%` weighted Hangul thinking (`80.1%` to `99.2%` Korean content, translation exemption passed).
-- `claude-opus-5-5-high` passed `korean-reasoning` (`94.0%` Hangul thinking, `92.9%` content) and `tool-code-analysis` (`91.1%` Hangul thinking, `94.5%` content) with zero hook injections under the prior natural Korean rule revision; live re-verification against the final every-paragraph lock rule and `Stop` hook is pending quota reset (`429`).
-- `gpt-oss-120b-medium` keeps most internal thinking in English; the `thinking`-only cap avoids repeated context pollution.
+### Environment variables and precedence
 
-## Verify
+Environment variables override `config.json`, which overrides built-in defaults.
 
-Run the unit tests, strict plugin validation, and isolated live checks from the repository root.
+1. `HSTACK_SCHEMA_REGISTER` (`"neutral"` or `"audit"`) > `config.json` `schemaRegister` > `"neutral"`.
+2. `HSTACK_AUDIT_ESCALATION` (`"auto"`, `"manual"`, or `"off"`) > `config.json` `auditEscalation` > `"auto"`.
+
+## Usage guide
+
+### Context handoff (`/hstack-handoff`)
+
+Use `/hstack-handoff` to distill and transfer session state without carrying raw conversation bloat.
+
+- `/hstack-handoff save` (default): calls `manage_handoff(action: "save")` to store verified facts, failed approaches, remaining tasks, open risks, and machine evidence as a workspace snapshot.
+- `/hstack-handoff load` or `/hstack-handoff load <snapshot_id>`: calls `manage_handoff(action: "load")` to restore the latest or named snapshot and warn if Git HEAD or dirty files changed since saving.
+- `/hstack-handoff list`: calls `manage_handoff(action: "list")` to inspect recent snapshots for the current workspace.
+- `/hstack-handoff delegate`: saves or loads the latest snapshot and dispatches `hstack-worker` (`invoke_subagent`) with the distilled handoff brief and scoped verification target.
+
+### Audit log summary CLI (`scripts/audit-report.mjs`)
+
+Inspect operational gate metrics, rule hit distribution, Tier 1 audit pass rates, context pollution alerts, and local scan latencies from `audit.jsonl`.
+
+```sh
+node ./scripts/audit-report.mjs
+node ./scripts/audit-report.mjs --days 7
+node ./scripts/audit-report.mjs --since 2026-11-20 --group-by week
+node ./scripts/audit-report.mjs --days 7 --json
+node ./scripts/audit-report.mjs --file /path/to/audit.jsonl
+```
+
+Default file resolution checks `--file`, `$PLUGIN_DATA/audit.jsonl`, `$ANTIGRAVITY_APP_DATA_DIR/plugin_data/hstack/audit.jsonl`, `~/.gemini/antigravity-cli/plugin_data/hstack/audit.jsonl`, and `resolvePluginDataDir()/audit.jsonl` in order.
+
+## Verification and tests
+
+Run the unit test suite, strict plugin manifest validation, and isolated live checks from the repository root.
 
 ```sh
 node --test test/*.test.mjs
-agy plugin validate --strict .
-node test/verify-live.mjs --models gemini-4-neon-xhigh,claude-opus-5-5-high
+agy plugin validate --strict --json .
+node ./test/verify-live.mjs --models gemini-4-neon-xhigh
 ```
 
-`test/verify-live.mjs` runs each case in an isolated temporary `HOME` and app-data directory so globally installed plugins cannot interfere, cleans up temporary brain logs automatically, and supports these flags:
+`test/verify-live.mjs` executes each scenario in an isolated temporary `HOME` and app-data directory so global plugins cannot interfere and cleans up temporary logs on exit.
 
-```sh
-node test/verify-live.mjs \
-  --models gemini-4-neon-xhigh,claude-opus-5-5-high \
-  --cases korean-reasoning,tool-code-analysis,heavy-english-skill-tools,explicit-translation,todo-checklist,deep-code-audit \
-  --timeout 240 \
-  --keep-logs
-```
+### Measured baseline
 
-See the [Publishing guide](docs/PUBLISHING.md) for releases and the [MIT License](LICENSE) for licensing.
+- Unit and integration suite: `node --test test/*.test.mjs` covers analyzer, English-request exemptions, transcript hooks, fact ledger, completion gate (`R1` through `R7`), risk classification and independent audit (`R8`/`E9`/`E10`), handoff store and MCP stdio roundtrip, and `audit-report.mjs`.
+- Strict manifest validation: `agy plugin validate --strict --json .` exits `0` with `"findings": []`.
+- Isolated live Korean baseline (`gemini-4-neon-xhigh`, 5 cases: `korean-reasoning`, `tool-code-analysis`, `heavy-english-skill-tools`, `explicit-translation`, `todo-checklist`): `5/5` pass, `driftInjections: 0`, `preToolDenials: 0`, weighted Hangul thinking `93.65%` to `100.0%`.
+- Global `hstack` live governance verification: Tier 0 direct pass, Tier 1 automatic auditor escalation and pass, `/hstack-handoff save` + `load` + `delegate` worker completion, and zero `audit.jsonl` data loss across plugin reinstall.
+
+See [Publishing guide](docs/PUBLISHING.md) for releases and [MIT License](LICENSE) for licensing.
