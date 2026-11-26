@@ -31,8 +31,9 @@ const AUDIT_TAIL_MAX_CHARS = 4096;
 const GIT_TIMEOUT_MS = 1500;
 const MAX_UNWRAP_DEPTH = 2;
 const MAX_UNTRACKED_COUNT_BYTES = 512 * 1024;
-const SUBAGENT_CONVERSATION_ID_RE = /(?:conversationId|conversation_id|sender)\s*[:=]\s*["']?([0-9a-f-]{8,64})/i;
+const SUBAGENT_CONVERSATION_ID_RE = /["']?(?:conversationId|conversation_id|sender)["']?\s*[:=]\s*["']?([0-9a-f-]{8,64})/i;
 const SUBAGENT_SENDER_MSG_RE = /sender=([0-9a-f-]{8,64})\b/i;
+const SYSTEM_WRAPPER_LINE_RE = /^<\/?(?:SYSTEM_MESSAGE|USER_REQUEST|ADDITIONAL_METADATA)>$/i;
 
 const SHELL_WRAPPERS = new Set(["sudo", "time", "env", "command", "nohup"]);
 const WRAPPER_FLAGS_WITH_ARG = {
@@ -662,7 +663,7 @@ export function parseAuditVerdictFromText(fullContent, { status = "", error = ""
   const lines = tail
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith(PRE_TOOL_NOTICE_PREFIX));
+    .filter((line) => line.length > 0 && !line.startsWith(PRE_TOOL_NOTICE_PREFIX) && !SYSTEM_WRAPPER_LINE_RE.test(line));
 
   if (lines.length === 0) {
     return "MISSING_VERDICT";
@@ -834,6 +835,7 @@ function createEmptyLedger(transcriptAvailable = false) {
     fileEditCounts: new Map(),
     turnGateAttempts: [],
     turnSubagentAudits: [],
+    pendingAsyncAuditorCount: 0,
     latestTokens: { inputTokens: null, cacheReadTokens: null, outputTokens: null },
     gateBlockedThisTurn: false,
   };
@@ -856,6 +858,7 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
     ledger.fileEditCounts = new Map();
     ledger.turnGateAttempts = [];
     ledger.turnSubagentAudits = [];
+    ledger.pendingAsyncAuditorCount = 0;
     ledger.gateBlockedThisTurn = false;
     pendingCalls = [];
     asyncAuditsByConversationId.clear();
@@ -914,9 +917,7 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
             tracked.stepIndex = Math.max(tracked.stepIndex, stepIndex);
             tracked.tail = extractTail(msgContent, AUDIT_TAIL_MAX_CHARS);
             tracked.verdict = parseAuditVerdictFromText(msgContent);
-            if (tracked.verdict === "PASS" || tracked.verdict === "REJECT") {
-              asyncAuditsByConversationId.delete(senderId);
-            }
+            asyncAuditsByConversationId.delete(senderId);
           }
         }
         return true;
@@ -1073,6 +1074,7 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
   if (!result.hasContent) {
     return null;
   }
+  ledger.pendingAsyncAuditorCount = asyncAuditsByConversationId.size;
   return ledger;
 }
 

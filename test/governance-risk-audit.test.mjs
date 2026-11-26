@@ -413,6 +413,82 @@ describe("fact-ledger Phase 2 extensions, git numstat, and 5MB performance", () 
     assert.equal(readFactLedger(auditorPath, "/repo", "/repo").sessionRole, "auditor");
   });
 
+  it("matches real agy JSON invoke_subagent conversationId and </SYSTEM_MESSAGE>-wrapped verdict, and tracks pending async audits", () => {
+    const dir = createTempDir("hstack-ledger-async-real-");
+    const pendingPath = join(dir, "pending_full.jsonl");
+    writeFileSync(
+      pendingPath,
+      toJsonl([
+        { step_index: 0, type: "USER_INPUT", content: "인증 토큰 수정해 줘" },
+        { step_index: 1, type: "PLANNER_RESPONSE", tool_calls: [{ name: "edit_file", args: { Path: "auth/token.mjs" } }] },
+        { step_index: 2, type: "GENERIC", status: "DONE", content: "ok" },
+        {
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [{ name: "invoke_subagent", args: { TypeName: AUDITOR_AGENT_NAME, Role: AUDITOR_ROLE_LABEL, Prompt: "감사" } }],
+        },
+        {
+          step_index: 4,
+          type: "GENERIC",
+          status: "DONE",
+          content:
+            'A pre-tool hook changed the arguments of this tool call before it ran. Changed: Prompt.\n\n{\n  "conversationId": "67b97a74-49e7-4ece-8bba-6c45dcabb02b",\n  "workspacePaths": ["/tmp/ws"]\n}\nThe subagent will send you a message when it has completed its task.',
+        },
+        { step_index: 5, type: "PLANNER_RESPONSE", thinking: "감사 완료를 기다립니다.", content: "감사 결과를 기다리고 있습니다." },
+      ]),
+      "utf8",
+    );
+
+    const pendingLedger = readFactLedger(pendingPath, "/tmp/ws", "/tmp/ws");
+    assert.equal(pendingLedger.pendingAsyncAuditorCount, 1);
+    assert.equal(pendingLedger.turnSubagentAudits[0].conversationId, "67b97a74-49e7-4ece-8bba-6c45dcabb02b");
+
+    const pendingStop = handleStop(
+      JSON.stringify({
+        hookEventName: "Stop",
+        terminationReason: "NO_TOOL_CALL",
+        executionNum: 0,
+        cwd: "/tmp/ws",
+        transcriptPath: pendingPath,
+      }),
+    );
+    assert.deepEqual(pendingStop, {});
+
+    const resolvedPath = join(dir, "resolved_full.jsonl");
+    writeFileSync(
+      resolvedPath,
+      toJsonl([
+        { step_index: 0, type: "USER_INPUT", content: "인증 토큰 수정해 줘" },
+        { step_index: 1, type: "PLANNER_RESPONSE", tool_calls: [{ name: "edit_file", args: { Path: "auth/token.mjs" } }] },
+        { step_index: 2, type: "GENERIC", status: "DONE", content: "ok" },
+        {
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [{ name: "invoke_subagent", args: { TypeName: AUDITOR_AGENT_NAME, Role: AUDITOR_ROLE_LABEL, Prompt: "감사" } }],
+        },
+        {
+          step_index: 4,
+          type: "GENERIC",
+          status: "DONE",
+          content:
+            '{\n  "conversationId": "67b97a74-49e7-4ece-8bba-6c45dcabb02b"\n}\nThe subagent will send you a message when it has completed its task.',
+        },
+        {
+          step_index: 5,
+          type: "SYSTEM_MESSAGE",
+          content:
+            "The following is a <SYSTEM_MESSAGE>\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-26T00:09:45Z sender=67b97a74-49e7-4ece-8bba-6c45dcabb02b priority=MESSAGE_PRIORITY_HIGH content=결함이 없습니다.\n\n[감사 판정: 통과]\n</SYSTEM_MESSAGE>",
+        },
+      ]),
+      "utf8",
+    );
+
+    const resolvedLedger = readFactLedger(resolvedPath, "/tmp/ws", "/tmp/ws");
+    assert.equal(resolvedLedger.pendingAsyncAuditorCount, 0);
+    assert.equal(resolvedLedger.turnSubagentAudits[0].verdict, "PASS");
+    assert.equal(resolvedLedger.turnSubagentAudits[0].stepIndex, 5);
+  });
+
   it("collects diffNumstat for modified tracked files and untracked code files, including repos without HEAD", () => {
     const repo = createTempDir("hstack-git-numstat-");
     runGit(repo, ["init"]);
