@@ -347,7 +347,7 @@ describe("verify-live governance cases L1-L4, audit parsing, and panic detection
   const koreanThinking = "이 추론과 생각 요약은 반드시 한국어로만 작성한다. 작업 결과와 검증 근거를 확인한다.";
   const koreanContent = "할인 계산 버그를 수정하고 단위 테스트 통과를 확인했습니다.";
 
-  it("registers all 10 cases (6 existing + L1..L4) and sets up the buggy sample-calc workspace cleanly", () => {
+  it("registers all 14 cases (6 existing + L1..L8) and sets up the buggy sample-calc workspace cleanly", () => {
     const names = CASES.map((entry) => entry.name);
     assert.deepEqual(names, [
       "korean-reasoning",
@@ -360,6 +360,10 @@ describe("verify-live governance cases L1-L4, audit parsing, and panic detection
       "L2-unverified-reject-recovery",
       "L3-bypass-stop-recovery",
       "L4-readonly-frictionless",
+      "L5-high-risk-audit-pass",
+      "L6-high-risk-audit-reject-recovery",
+      "L7-cross-session-handoff",
+      "L8-low-risk-no-escalation",
     ]);
 
     for (const govName of [
@@ -367,6 +371,10 @@ describe("verify-live governance cases L1-L4, audit parsing, and panic detection
       "L2-unverified-reject-recovery",
       "L3-bypass-stop-recovery",
       "L4-readonly-frictionless",
+      "L5-high-risk-audit-pass",
+      "L6-high-risk-audit-reject-recovery",
+      "L7-cross-session-handoff",
+      "L8-low-risk-no-escalation",
     ]) {
       const testCase = CASES.find((entry) => entry.name === govName);
       assert.equal(testCase.commitInitialWorkspace, true, `${govName}: must commit initial fixture`);
