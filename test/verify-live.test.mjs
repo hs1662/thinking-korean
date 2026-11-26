@@ -640,4 +640,20 @@ describe("verify-live governance cases L1-L4, audit parsing, and panic detection
     assert.ok(l4Violated.failures.some((msg) => msg.includes("stopBlocks=0")));
     assert.ok(l4Violated.failures.some((msg) => msg.includes("no modified files")));
   });
+
+  it("Audit #9: challengerHasFileLineCitation only checks challenger outputs and runs in linear time", () => {
+    const t0 = Date.now();
+    const res = summarizeGovernance({
+      steps: [
+        makeStep(0, "PLANNER_RESPONSE", {
+          thinking: koreanThinking,
+          content: `오류 스택 src/other.mjs:99 와 긴 점열 ${"a.".repeat(10000)}a`,
+        }),
+      ],
+      ledgerChallenges: [{ verdict: "RETHINK", tail: "근거 없는 일반 반론입니다." }],
+    });
+    const elapsedMs = Date.now() - t0;
+    assert.equal(res.challengerHasFileLineCitation, false);
+    assert.ok(elapsedMs < 100, `expected linear-time regex (<100ms), got ${elapsedMs}ms`);
+  });
 });

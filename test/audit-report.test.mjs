@@ -171,7 +171,7 @@ describe("audit-report parser and aggregator", () => {
     assert.equal(summary.overview.firstAttemptTotal, 4);
     assert.equal(summary.overview.firstAttemptRejects, 1);
     assert.equal(summary.overview.firstAttemptRejectRate, 25);
-    assert.deepEqual(summary.overview.sessionRoles, { main: 2, auditor: 1, worker: 1, unknown: 1 });
+    assert.deepEqual(summary.overview.sessionRoles, { main: 2, auditor: 1, worker: 1, challenger: 0, unknown: 1 });
     assert.deepEqual(summary.overview.schemaRegisters, { neutral: 4, audit: 1, unknown: 0 });
     assert.deepEqual(summary.overview.handoff, { save: 1, load: 1 });
 
