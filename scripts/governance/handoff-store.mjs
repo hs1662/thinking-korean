@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -43,6 +45,55 @@ function safeRealpath(rawPath) {
 export function computeWorkspaceKey(cwd, gitRoot = "") {
   const base = safeRealpath(gitRoot || cwd || process.cwd());
   return createHash("sha256").update(base, "utf8").digest("hex").slice(0, 12);
+}
+
+const SESSION_LOCK_STALE_MS = 10_000;
+const SESSION_LOCK_RETRIES = 25;
+const SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepMsSync(ms) {
+  Atomics.wait(SLEEP_BUFFER, 0, 0, ms);
+}
+
+function withSessionLock(filePath, fn) {
+  const dir = resolve(filePath, "..");
+  mkdirSync(dir, { recursive: true });
+  const lockPath = `${filePath}.lock`;
+  let fd = null;
+  for (let attempt = 0; attempt < SESSION_LOCK_RETRIES; attempt += 1) {
+    try {
+      fd = openSync(lockPath, "wx");
+      break;
+    } catch (err) {
+      if (err?.code !== "EEXIST") {
+        throw err;
+      }
+      try {
+        const st = statSync(lockPath);
+        if (Date.now() - st.mtimeMs > SESSION_LOCK_STALE_MS) {
+          unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      sleepMsSync(10);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+      }
+      try {
+        unlinkSync(lockPath);
+      } catch {
+      }
+    }
+  }
 }
 
 function atomicWriteJson(targetPath, data) {
@@ -138,58 +189,60 @@ export function updateSessionPollutionState({
     return null;
   }
 
-  const prev = readSessionState(conversationId, dataDir) ?? {};
-  const isNewTurn =
-    typeof turnStartStepIndex === "number" &&
-    Number.isFinite(turnStartStepIndex) &&
-    typeof prev.turnStartStepIndex === "number" &&
-    prev.turnStartStepIndex !== turnStartStepIndex;
+  return withSessionLock(filePath, () => {
+    const prev = readSessionState(conversationId, dataDir) ?? {};
+    const isNewTurn =
+      typeof turnStartStepIndex === "number" &&
+      Number.isFinite(turnStartStepIndex) &&
+      typeof prev.turnStartStepIndex === "number" &&
+      prev.turnStartStepIndex !== turnStartStepIndex;
 
-  const mergedInputTokens =
-    typeof inputTokens === "number" && Number.isFinite(inputTokens)
-      ? Math.max(inputTokens, Number.isFinite(prev.inputTokens) ? prev.inputTokens : 0)
-      : (Number.isFinite(prev.inputTokens) ? prev.inputTokens : null);
-  const nextFailed = Number.isFinite(failedExecutionsInTurn) ? failedExecutionsInTurn : 0;
-  const nextEdits = Number.isFinite(maxSingleFileEdits) ? maxSingleFileEdits : 0;
-  const mergedFailed = isNewTurn
-    ? nextFailed
-    : Math.max(nextFailed, Number.isFinite(prev.failedExecutionsInTurn) ? prev.failedExecutionsInTurn : 0);
-  const mergedFileEdits = isNewTurn
-    ? nextEdits
-    : Math.max(nextEdits, Number.isFinite(prev.maxSingleFileEdits) ? prev.maxSingleFileEdits : 0);
+    const mergedInputTokens =
+      typeof inputTokens === "number" && Number.isFinite(inputTokens)
+        ? Math.max(inputTokens, Number.isFinite(prev.inputTokens) ? prev.inputTokens : 0)
+        : (Number.isFinite(prev.inputTokens) ? prev.inputTokens : null);
+    const nextFailed = Number.isFinite(failedExecutionsInTurn) ? failedExecutionsInTurn : 0;
+    const nextEdits = Number.isFinite(maxSingleFileEdits) ? maxSingleFileEdits : 0;
+    const mergedFailed = isNewTurn
+      ? nextFailed
+      : Math.max(nextFailed, Number.isFinite(prev.failedExecutionsInTurn) ? prev.failedExecutionsInTurn : 0);
+    const mergedFileEdits = isNewTurn
+      ? nextEdits
+      : Math.max(nextEdits, Number.isFinite(prev.maxSingleFileEdits) ? prev.maxSingleFileEdits : 0);
 
-  const tokenLimit = thresholds?.inputTokensWarning ?? DEFAULT_POLLUTION_THRESHOLDS.inputTokensWarning;
-  const failLimit = thresholds?.failedExecutionsInTurn ?? DEFAULT_POLLUTION_THRESHOLDS.failedExecutionsInTurn;
-  const churnLimit = thresholds?.repeatedFileEditChurn ?? DEFAULT_POLLUTION_THRESHOLDS.repeatedFileEditChurn;
+    const tokenLimit = thresholds?.inputTokensWarning ?? DEFAULT_POLLUTION_THRESHOLDS.inputTokensWarning;
+    const failLimit = thresholds?.failedExecutionsInTurn ?? DEFAULT_POLLUTION_THRESHOLDS.failedExecutionsInTurn;
+    const churnLimit = thresholds?.repeatedFileEditChurn ?? DEFAULT_POLLUTION_THRESHOLDS.repeatedFileEditChurn;
 
-  const pollutionAlert =
-    (mergedInputTokens !== null && mergedInputTokens >= tokenLimit) ||
-    mergedFailed >= failLimit ||
-    mergedFileEdits >= churnLimit;
+    const pollutionAlert =
+      (mergedInputTokens !== null && mergedInputTokens >= tokenLimit) ||
+      mergedFailed >= failLimit ||
+      mergedFileEdits >= churnLimit;
 
-  const prevLoggedPreflightKeys = Array.isArray(prev.loggedPreflightKeys)
-    ? prev.loggedPreflightKeys.filter((k) => typeof k === "string" && k.length > 0).slice(-50)
-    : [];
+    const prevLoggedPreflightKeys = Array.isArray(prev.loggedPreflightKeys)
+      ? prev.loggedPreflightKeys.filter((k) => typeof k === "string" && k.length > 0).slice(-50)
+      : [];
 
-  const state = {
-    conversationId,
-    turnStartStepIndex:
-      typeof turnStartStepIndex === "number" && Number.isFinite(turnStartStepIndex)
-        ? turnStartStepIndex
-        : (typeof prev.turnStartStepIndex === "number" ? prev.turnStartStepIndex : 0),
-    updatedAt: new Date().toISOString(),
-    inputTokens: mergedInputTokens,
-    failedExecutionsInTurn: mergedFailed,
-    maxSingleFileEdits: mergedFileEdits,
-    pollutionAlert,
-    loggedPreflightKeys: prevLoggedPreflightKeys,
-  };
+    const state = {
+      conversationId,
+      turnStartStepIndex:
+        typeof turnStartStepIndex === "number" && Number.isFinite(turnStartStepIndex)
+          ? turnStartStepIndex
+          : (typeof prev.turnStartStepIndex === "number" ? prev.turnStartStepIndex : 0),
+      updatedAt: new Date().toISOString(),
+      inputTokens: mergedInputTokens,
+      failedExecutionsInTurn: mergedFailed,
+      maxSingleFileEdits: mergedFileEdits,
+      pollutionAlert,
+      loggedPreflightKeys: prevLoggedPreflightKeys,
+    };
 
-  try {
-    atomicWriteJson(filePath, state);
-  } catch {
-  }
-  return state;
+    try {
+      atomicWriteJson(filePath, state);
+    } catch {
+    }
+    return state;
+  });
 }
 
 export function markPreflightChallengeLogged({
@@ -201,26 +254,28 @@ export function markPreflightChallengeLogged({
   if (!filePath || typeof dedupKey !== "string" || dedupKey.length === 0) {
     return false;
   }
-  const prev = readSessionState(conversationId, dataDir) ?? { conversationId };
-  const existing = Array.isArray(prev.loggedPreflightKeys)
-    ? prev.loggedPreflightKeys.filter((k) => typeof k === "string" && k.length > 0)
-    : [];
-  if (existing.includes(dedupKey)) {
-    return false;
-  }
-  const nextKeys = [...existing, dedupKey].slice(-50);
-  const nextState = {
-    ...prev,
-    conversationId,
-    updatedAt: new Date().toISOString(),
-    loggedPreflightKeys: nextKeys,
-  };
-  try {
-    atomicWriteJson(filePath, nextState);
-    return true;
-  } catch {
-    return false;
-  }
+  return withSessionLock(filePath, () => {
+    const prev = readSessionState(conversationId, dataDir) ?? { conversationId };
+    const existing = Array.isArray(prev.loggedPreflightKeys)
+      ? prev.loggedPreflightKeys.filter((k) => typeof k === "string" && k.length > 0)
+      : [];
+    if (existing.includes(dedupKey)) {
+      return false;
+    }
+    const nextKeys = [...existing, dedupKey].slice(-50);
+    const nextState = {
+      ...prev,
+      conversationId,
+      updatedAt: new Date().toISOString(),
+      loggedPreflightKeys: nextKeys,
+    };
+    try {
+      atomicWriteJson(filePath, nextState);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function summarizeDiffStat(gitLedger) {

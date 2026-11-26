@@ -66,7 +66,7 @@ export function handleStop(stdinText, readTextFile) {
 
   const isReadOnlyGovernanceRole = ledger?.sessionRole === "auditor" || ledger?.sessionRole === "challenger";
   const hasPendingAsyncAuditor = Boolean(ledger && ledger.pendingAsyncAuditsAfterLastWrite > 0);
-  const hasPendingAsyncChallenges = Boolean(ledger && ledger.pendingAsyncChallenges > 0);
+  const hasPendingAsyncChallenges = Boolean(ledger && ledger.pendingAsyncChallengesAfterLastWrite > 0);
   const gateBlockedThisTurn = Boolean(ledger?.gateBlockedThisTurn);
   const hasPassingPostWriteGate = Boolean(
     ledger &&

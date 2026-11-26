@@ -48,9 +48,14 @@ const INJECTED_CONTEXT_LINE_RE =
   /^(?:작업 경로:|세션 기록 경로:|현재 턴 시작 스텝:|-\s*작업 디렉터리:|위 작업 경로의 실제 파일과 호출 관계를 직접 읽고)/;
 const ALLOWED_SUBAGENT_SYSTEM_SOURCES = new Set(["SYSTEM"]);
 const SESSION_ROLE_PRIORITY = { main: 0, worker: 1, challenger: 2, auditor: 3 };
+const ASYNC_LAUNCH_ACK_HINT_RE = /\b(?:launch(?:ed)?|start(?:ed)?|spawn(?:ed)?|creat(?:ed)?|subagent|background|async)\b/i;
+const MAX_ASYNC_LAUNCH_ACK_CHARS = 2048;
 const VOTE_TIMESTAMP_LINE_RE = /^(?:Created|Completed)\s+At:/i;
 const VOTE_ANSWER_LINE_RE = /^A\d+\s*:\s*(.*)$/;
-const VOTE_ERROR_CONTENT_RE = /^(?:Error:|Tool error:|Failed to|Cancelled|Canceled|User cancelled|Rejected)/i;
+const VOTE_ERROR_CONTENT_RE =
+  /^(?:Error:|Tool error:|Failed to|Cancelled|Canceled|User cancelled|User canceled|User rejected|Rejected|Dismissed|No answer|Aborted|Timeout)/i;
+const FINAL_AUDIT_VERDICTS = new Set(["PASS", "REJECT", "ERROR"]);
+const FINAL_PREFLIGHT_VERDICTS = new Set(["PROCEED", "CONDITIONAL", "RETHINK", "ERROR"]);
 
 const SHELL_WRAPPERS = new Set(["sudo", "time", "env", "command", "nohup"]);
 const WRAPPER_FLAGS_WITH_ARG = {
@@ -746,23 +751,16 @@ function parseUserVoteResult(rawContent, { status = "", error = "", isDenial = f
   if (meaningfulLines.length === 0) {
     return { answered: false, errored: false };
   }
-  if (meaningfulLines.every((line) => VOTE_ERROR_CONTENT_RE.test(line))) {
+  if (VOTE_ERROR_CONTENT_RE.test(meaningfulLines[0]) || meaningfulLines.some((line) => VOTE_ERROR_CONTENT_RE.test(line))) {
     return { answered: false, errored: true };
   }
-  let sawAnswerPrefix = false;
   for (const line of meaningfulLines) {
     const answerMatch = line.match(VOTE_ANSWER_LINE_RE);
-    if (answerMatch) {
-      sawAnswerPrefix = true;
-      if (answerMatch[1].trim().length > 0) {
-        return { answered: true, errored: false };
-      }
+    if (answerMatch && answerMatch[1].trim().length > 0) {
+      return { answered: true, errored: false };
     }
   }
-  if (sawAnswerPrefix) {
-    return { answered: false, errored: false };
-  }
-  return { answered: true, errored: false };
+  return { answered: false, errored: false };
 }
 
 function extractSubagentConversationIds(text) {
@@ -779,17 +777,88 @@ function extractSubagentConversationIds(text) {
 }
 
 function isAsyncSubagentLaunchAck(text) {
-  if (typeof text !== "string" || text.length === 0) {
+  if (typeof text !== "string" || text.length === 0 || text.length > MAX_ASYNC_LAUNCH_ACK_CHARS) {
     return false;
   }
+  const trimmed = text.trim();
+  const isStructuredOrHintAck =
+    trimmed.startsWith("{") || trimmed.startsWith("[") || ASYNC_LAUNCH_ACK_HINT_RE.test(trimmed);
   return (
-    SUBAGENT_CONVERSATION_ID_RE.test(text) &&
-    !text.includes(AUDIT_PASS_TAG) &&
-    !text.includes(AUDIT_REJECT_TAG) &&
-    !text.includes(PREFLIGHT_PROCEED_TAG) &&
-    !text.includes(PREFLIGHT_CONDITIONAL_TAG) &&
-    !text.includes(PREFLIGHT_RETHINK_TAG)
+    SUBAGENT_CONVERSATION_ID_RE.test(trimmed) &&
+    isStructuredOrHintAck &&
+    !trimmed.includes(AUDIT_PASS_TAG) &&
+    !trimmed.includes(AUDIT_REJECT_TAG) &&
+    !trimmed.includes(PREFLIGHT_PROCEED_TAG) &&
+    !trimmed.includes(PREFLIGHT_CONDITIONAL_TAG) &&
+    !trimmed.includes(PREFLIGHT_RETHINK_TAG)
   );
+}
+
+function applyAsyncSubagentMessage(trackedMap, senderId, msgContent, stepIndex, { parseVerdict, finalVerdicts, holdCompletionUntilFinal }) {
+  const tracked = trackedMap.get(senderId);
+  if (!tracked) {
+    return;
+  }
+  tracked.tail = extractTail(msgContent, AUDIT_TAIL_MAX_CHARS);
+  const parsedVerdict = parseVerdict(msgContent);
+  tracked.verdict = parsedVerdict;
+  const isFinal = finalVerdicts.has(parsedVerdict);
+  if (isFinal) {
+    tracked.completedStepIndex = Math.max(
+      tracked.completedStepIndex >= 0 ? tracked.completedStepIndex : tracked.launchedStepIndex,
+      stepIndex,
+    );
+    tracked.stepIndex = tracked.completedStepIndex;
+    trackedMap.delete(senderId);
+  } else if (!holdCompletionUntilFinal) {
+    tracked.completedStepIndex = Math.max(
+      tracked.completedStepIndex >= 0 ? tracked.completedStepIndex : tracked.launchedStepIndex,
+      stepIndex,
+    );
+    tracked.stepIndex = tracked.completedStepIndex;
+  } else {
+    tracked.receivedMessage = true;
+  }
+}
+
+function applyManagedSubagentGeneric(entries, { rawText, convIds, status, error, stepIndex, isDenial, isLaunchAck, parseVerdict, asyncMap, setCompletedOnSync }) {
+  if (entries.length === 0) {
+    return;
+  }
+  const directVerdict = parseVerdict(rawText, { status, error });
+  const isMixedBatch = entries.some((e) => e.totalSlots > 1);
+  for (const entry of entries) {
+    entry.tail = extractTail(rawText, AUDIT_TAIL_MAX_CHARS);
+    const matchedId = entry.totalSlots > 1 ? (convIds[entry.slotIndex] ?? "") : (convIds[0] ?? "");
+    if (matchedId) {
+      entry.conversationId = matchedId;
+    }
+    if (isDenial) {
+      entry.verdict = "ERROR";
+      if (setCompletedOnSync) {
+        entry.completedStepIndex = stepIndex;
+        entry.stepIndex = stepIndex;
+      }
+    } else if (matchedId && isLaunchAck) {
+      entry.verdict = "MISSING_VERDICT";
+      if (setCompletedOnSync) {
+        entry.completedStepIndex = -1;
+      }
+      asyncMap.set(matchedId, entry);
+    } else if (isMixedBatch && !matchedId) {
+      entry.verdict = directVerdict === "ERROR" ? "ERROR" : "MISSING_VERDICT";
+      if (setCompletedOnSync) {
+        entry.completedStepIndex = stepIndex;
+        entry.stepIndex = stepIndex;
+      }
+    } else {
+      entry.verdict = directVerdict;
+      if (setCompletedOnSync) {
+        entry.completedStepIndex = stepIndex;
+        entry.stepIndex = stepIndex;
+      }
+    }
+  }
 }
 
 function normalizeRoleLines(content) {
@@ -1013,6 +1082,7 @@ function createEmptyLedger(transcriptAvailable = false) {
     pendingAsyncAuditsAfterLastWrite: 0,
     turnPreflightChallenges: [],
     pendingAsyncChallenges: 0,
+    pendingAsyncChallengesAfterLastWrite: 0,
     turnUserVotes: [],
     latestTokens: { inputTokens: null, cacheReadTokens: null, outputTokens: null },
     gateBlockedThisTurn: false,
@@ -1051,6 +1121,7 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
     ledger.pendingAsyncAuditsAfterLastWrite = 0;
     ledger.turnPreflightChallenges = [];
     ledger.pendingAsyncChallenges = 0;
+    ledger.pendingAsyncChallengesAfterLastWrite = 0;
     ledger.turnUserVotes = [];
     ledger.gateBlockedThisTurn = false;
     pendingCalls = [];
@@ -1105,44 +1176,26 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
         if (msgContent.includes(GATE_STOP_MARKER)) {
           ledger.gateBlockedThisTurn = true;
         }
-        if ((asyncAuditsByConversationId.size > 0 || asyncChallengesByConversationId.size > 0) && msgContent.length > 0) {
+        const rawSource = typeof parsed.source === "string" ? parsed.source.trim() : "";
+        const allowedSubagentSource = rawSource.length === 0 || ALLOWED_SUBAGENT_SYSTEM_SOURCES.has(rawSource);
+        if (
+          allowedSubagentSource &&
+          (asyncAuditsByConversationId.size > 0 || asyncChallengesByConversationId.size > 0) &&
+          msgContent.length > 0
+        ) {
           const senderMatch = msgContent.match(SUBAGENT_SENDER_MSG_RE);
           const senderId = senderMatch ? senderMatch[1] : "";
           if (senderId) {
-            const trackedAudit = asyncAuditsByConversationId.get(senderId);
-            if (trackedAudit) {
-              trackedAudit.completedStepIndex = Math.max(
-                trackedAudit.completedStepIndex >= 0 ? trackedAudit.completedStepIndex : trackedAudit.launchedStepIndex,
-                stepIndex,
-              );
-              trackedAudit.stepIndex = trackedAudit.completedStepIndex;
-              trackedAudit.tail = extractTail(msgContent, AUDIT_TAIL_MAX_CHARS);
-              const parsedVerdict = parseAuditVerdictFromText(msgContent);
-              trackedAudit.verdict = parsedVerdict;
-              if (parsedVerdict === "PASS" || parsedVerdict === "REJECT" || parsedVerdict === "ERROR") {
-                asyncAuditsByConversationId.delete(senderId);
-              }
-            }
-
-            const trackedChallenge = asyncChallengesByConversationId.get(senderId);
-            if (trackedChallenge) {
-              trackedChallenge.completedStepIndex = Math.max(
-                trackedChallenge.completedStepIndex >= 0 ? trackedChallenge.completedStepIndex : trackedChallenge.launchedStepIndex,
-                stepIndex,
-              );
-              trackedChallenge.stepIndex = trackedChallenge.completedStepIndex;
-              trackedChallenge.tail = extractTail(msgContent, AUDIT_TAIL_MAX_CHARS);
-              const parsedVerdict = parsePreflightVerdictFromText(msgContent);
-              trackedChallenge.verdict = parsedVerdict;
-              if (
-                parsedVerdict === "PROCEED" ||
-                parsedVerdict === "CONDITIONAL" ||
-                parsedVerdict === "RETHINK" ||
-                parsedVerdict === "ERROR"
-              ) {
-                asyncChallengesByConversationId.delete(senderId);
-              }
-            }
+            applyAsyncSubagentMessage(asyncAuditsByConversationId, senderId, msgContent, stepIndex, {
+              parseVerdict: parseAuditVerdictFromText,
+              finalVerdicts: FINAL_AUDIT_VERDICTS,
+              holdCompletionUntilFinal: false,
+            });
+            applyAsyncSubagentMessage(asyncChallengesByConversationId, senderId, msgContent, stepIndex, {
+              parseVerdict: parsePreflightVerdictFromText,
+              finalVerdicts: FINAL_PREFLIGHT_VERDICTS,
+              holdCompletionUntilFinal: true,
+            });
           }
         }
         return true;
@@ -1317,62 +1370,30 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
           const isDenial = isPreToolDenialStep(parsed);
           const isLaunchAck = isAsyncSubagentLaunchAck(rawText);
 
-          if (pending.auditEntries.length > 0) {
-            const directAuditVerdict = parseAuditVerdictFromText(rawText, { status, error });
-            const isMixedBatch = pending.auditEntries.some((e) => e.totalSlots > 1);
-            for (const entry of pending.auditEntries) {
-              entry.tail = extractTail(rawText, AUDIT_TAIL_MAX_CHARS);
-              const matchedId =
-                entry.totalSlots > 1
-                  ? (convIds[entry.slotIndex] ?? "")
-                  : (convIds[0] ?? "");
-              if (matchedId) {
-                entry.conversationId = matchedId;
-              }
-              if (isDenial) {
-                entry.verdict = "ERROR";
-              } else if (matchedId && isLaunchAck) {
-                entry.verdict = "MISSING_VERDICT";
-                asyncAuditsByConversationId.set(matchedId, entry);
-              } else if (isMixedBatch && !matchedId) {
-                entry.verdict = directAuditVerdict === "ERROR" ? "ERROR" : "MISSING_VERDICT";
-              } else {
-                entry.verdict = directAuditVerdict;
-              }
-            }
-          }
-
-          if (pending.challengeEntries.length > 0) {
-            const directChallengeVerdict = parsePreflightVerdictFromText(rawText, { status, error });
-            const isMixedBatch = pending.challengeEntries.some((e) => e.totalSlots > 1);
-            for (const entry of pending.challengeEntries) {
-              entry.tail = extractTail(rawText, AUDIT_TAIL_MAX_CHARS);
-              const matchedId =
-                entry.totalSlots > 1
-                  ? (convIds[entry.slotIndex] ?? "")
-                  : (convIds[0] ?? "");
-              if (matchedId) {
-                entry.conversationId = matchedId;
-              }
-              if (isDenial) {
-                entry.verdict = "ERROR";
-                entry.completedStepIndex = stepIndex;
-                entry.stepIndex = stepIndex;
-              } else if (matchedId && isLaunchAck) {
-                entry.verdict = "MISSING_VERDICT";
-                entry.completedStepIndex = -1;
-                asyncChallengesByConversationId.set(matchedId, entry);
-              } else if (isMixedBatch && !matchedId) {
-                entry.verdict = directChallengeVerdict === "ERROR" ? "ERROR" : "MISSING_VERDICT";
-                entry.completedStepIndex = stepIndex;
-                entry.stepIndex = stepIndex;
-              } else {
-                entry.verdict = directChallengeVerdict;
-                entry.completedStepIndex = stepIndex;
-                entry.stepIndex = stepIndex;
-              }
-            }
-          }
+          applyManagedSubagentGeneric(pending.auditEntries, {
+            rawText,
+            convIds,
+            status,
+            error,
+            stepIndex,
+            isDenial,
+            isLaunchAck,
+            parseVerdict: parseAuditVerdictFromText,
+            asyncMap: asyncAuditsByConversationId,
+            setCompletedOnSync: false,
+          });
+          applyManagedSubagentGeneric(pending.challengeEntries, {
+            rawText,
+            convIds,
+            status,
+            error,
+            stepIndex,
+            isDenial,
+            isLaunchAck,
+            parseVerdict: parsePreflightVerdictFromText,
+            asyncMap: asyncChallengesByConversationId,
+            setCompletedOnSync: true,
+          });
         }
         return true;
       }
@@ -1400,6 +1421,13 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
   }
   ledger.pendingAsyncAuditsAfterLastWrite = pendingAfterLastWrite;
   ledger.pendingAsyncChallenges = asyncChallengesByConversationId.size;
+  let pendingChallengesAfterLastWrite = 0;
+  for (const entry of asyncChallengesByConversationId.values()) {
+    if (entry.launchedStepIndex > ledger.lastWriteStepIndex) {
+      pendingChallengesAfterLastWrite += 1;
+    }
+  }
+  ledger.pendingAsyncChallengesAfterLastWrite = pendingChallengesAfterLastWrite;
   return ledger;
 }
 

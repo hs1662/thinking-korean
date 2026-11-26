@@ -421,7 +421,7 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
     other: 0,
   };
   const verdictsMap = new Map(VERDICT_ORDER.map((v) => [v, 0]));
-  const sessionRoles = { main: 0, auditor: 0, worker: 0, unknown: 0 };
+  const sessionRoles = { main: 0, auditor: 0, worker: 0, challenger: 0, unknown: 0 };
   const schemaRegisters = { neutral: 0, audit: 0, unknown: 0 };
   const periodMap = new Map();
   const ruleMap = new Map();
@@ -551,9 +551,6 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
 
     const role = typeof rec.sessionRole === "string" ? rec.sessionRole : "";
     if (SESSION_ROLES.includes(role)) {
-      if (!Object.hasOwn(sessionRoles, role)) {
-        sessionRoles[role] = 0;
-      }
       sessionRoles[role] += 1;
     } else {
       sessionRoles.unknown += 1;

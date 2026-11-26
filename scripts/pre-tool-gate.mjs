@@ -70,6 +70,27 @@ function appendContextBlock(promptText, lines) {
   return `${base}\n\n${block}`;
 }
 
+const INJECTED_TAIL_LINE_RE =
+  /^(?:작업 경로:|세션 기록 경로:|현재 턴 시작 스텝:|-\s*작업 디렉터리:|위 작업 경로의 실제 파일과 호출 관계를 직접 읽고)/;
+
+function hasTrailingMarkerBlock(promptText, marker) {
+  const nonEmpty = promptText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const tailStart = Math.max(0, nonEmpty.length - 6);
+  for (let i = tailStart; i < nonEmpty.length; i += 1) {
+    if (nonEmpty[i] !== marker) {
+      continue;
+    }
+    const rest = nonEmpty.slice(i + 1);
+    if (rest.length === 0 || rest.every((line) => INJECTED_TAIL_LINE_RE.test(line))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function buildInjectedPrompt(kind, existingPrompt, { cwd, transcriptPath, turnStartStepIndex }) {
   const safePrompt = typeof existingPrompt === "string" ? existingPrompt : "";
   const marker =
@@ -79,8 +100,7 @@ function buildInjectedPrompt(kind, existingPrompt, { cwd, transcriptPath, turnSt
         ? CHALLENGER_SESSION_MARKER
         : WORKER_SESSION_MARKER;
   const lines = [];
-  const hasStandaloneMarker = safePrompt.split(/\r?\n/).some((line) => line.trim() === marker);
-  if (!hasStandaloneMarker) {
+  if (!hasTrailingMarkerBlock(safePrompt, marker)) {
     lines.push(marker);
   }
   if (cwd && !safePrompt.includes(`작업 경로: \`${cwd}\``)) {

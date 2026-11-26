@@ -22,16 +22,8 @@ function tryLogCompletedPreflightChallenges(conversationId, ledger) {
   }
   const turnUserVotes = Array.isArray(ledger.turnUserVotes) ? ledger.turnUserVotes : [];
   const codeWritten = ledger.turnCodeWrittenFiles.size > 0;
-  const dedupConversationId = conversationId || "anonymous";
 
   for (const challenge of completed) {
-    const dedupKey = `${dedupConversationId}:${ledger.turnStartStepIndex}:${challenge.completedStepIndex}`;
-    const shouldLog = conversationId
-      ? markPreflightChallengeLogged({ conversationId, dedupKey })
-      : true;
-    if (!shouldLog) {
-      continue;
-    }
     const voted = turnUserVotes.some(
       (vote) =>
         vote &&
@@ -40,6 +32,19 @@ function tryLogCompletedPreflightChallenges(conversationId, ledger) {
         typeof vote.completedStepIndex === "number" &&
         vote.completedStepIndex > challenge.completedStepIndex,
     );
+    const launchIdx =
+      typeof challenge.launchedStepIndex === "number" ? challenge.launchedStepIndex : challenge.completedStepIndex;
+    const slotIdx = typeof challenge.slotIndex === "number" ? challenge.slotIndex : 0;
+    const votePhase = voted ? "voted" : "unvoted";
+    const shouldLog =
+      !conversationId ||
+      markPreflightChallengeLogged({
+        conversationId,
+        dedupKey: `${conversationId}:${ledger.turnStartStepIndex}:${launchIdx}:${slotIdx}:${votePhase}`,
+      });
+    if (!shouldLog) {
+      continue;
+    }
     appendAuditRecord({
       ts: new Date().toISOString(),
       event: "preflight_complete",

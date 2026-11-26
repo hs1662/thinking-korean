@@ -535,29 +535,37 @@ export function decideGate(input = {}, context = {}) {
   const completedChallenges = allChallenges.filter(
     (entry) => typeof entry?.completedStepIndex === "number" && entry.completedStepIndex >= 0,
   );
+  const turnUserVotes = Array.isArray(ledger.turnUserVotes) ? ledger.turnUserVotes : [];
+  const hasVoteAfterChallenge = (challenge) =>
+    turnUserVotes.some(
+      (vote) =>
+        vote &&
+        vote.answered === true &&
+        vote.errored !== true &&
+        typeof vote.completedStepIndex === "number" &&
+        vote.completedStepIndex > challenge.completedStepIndex,
+    );
+
   const latestChallenge =
     completedChallenges.length > 0 ? completedChallenges[completedChallenges.length - 1] : null;
-  const turnUserVotes = Array.isArray(ledger.turnUserVotes) ? ledger.turnUserVotes : [];
+  const unvotedChallenges = completedChallenges.filter((ch) => !hasVoteAfterChallenge(ch));
+  const unvotedRethinkChallenge =
+    unvotedChallenges.findLast((ch) => ch.verdict === "RETHINK") ?? null;
+  const effectiveChallenge =
+    unvotedRethinkChallenge ??
+    (unvotedChallenges.length > 0 ? unvotedChallenges[unvotedChallenges.length - 1] : latestChallenge);
   const hasPostChallengeVote = Boolean(
-    latestChallenge &&
-      turnUserVotes.some(
-        (vote) =>
-          vote &&
-          vote.answered === true &&
-          vote.errored !== true &&
-          typeof vote.completedStepIndex === "number" &&
-          vote.completedStepIndex > latestChallenge.completedStepIndex,
-      ),
+    effectiveChallenge && !unvotedRethinkChallenge && unvotedChallenges.length === 0 && hasVoteAfterChallenge(effectiveChallenge),
   );
   const preflight = {
     used: Boolean(latestChallenge),
-    verdict: latestChallenge ? latestChallenge.verdict : null,
+    verdict: effectiveChallenge ? effectiveChallenge.verdict : null,
     voted: hasPostChallengeVote,
   };
 
-  if (sessionRole === "main" && ledger.turnCodeWrittenFiles.size > 0 && latestChallenge && !hasPostChallengeVote) {
-    details.preflightVerdict = latestChallenge.verdict;
-    if (latestChallenge.verdict === "RETHINK") {
+  if (sessionRole === "main" && ledger.turnCodeWrittenFiles.size > 0 && effectiveChallenge && !hasPostChallengeVote) {
+    details.preflightVerdict = effectiveChallenge.verdict;
+    if (effectiveChallenge.verdict === "RETHINK") {
       blockedRules.push("R9_PREFLIGHT_UNVOTED");
     } else {
       warnedRules.push("R9_PREFLIGHT_UNVOTED");
@@ -596,28 +604,35 @@ export function decideGate(input = {}, context = {}) {
 
   const isOnlyPreflightUnvotedBlock =
     blockedRules.length === 1 && blockedRules[0] === "R9_PREFLIGHT_UNVOTED";
-  const canDegradeOnDeadlock =
-    blockedRules.length > 0 &&
-    priorRejects >= 3 &&
-    effectiveUnverifiedScope.length >= 1 &&
-    (!claimsAnyPass || isOnlyPreflightUnvotedBlock);
+  const canDegradeStandard =
+    blockedRules.length > 0 && priorRejects >= 3 && effectiveUnverifiedScope.length >= 1 && !claimsAnyPass;
+  const canDegradePreflightOnly =
+    isOnlyPreflightUnvotedBlock && priorRejects >= 3 && effectiveUnverifiedScope.length >= 1;
+  const needsIndependentAudit =
+    hasCodeWrite && auditEscalation === "auto" && risk.tier === "TIER_1" && sessionRole === "main";
 
-  if (canDegradeOnDeadlock) {
+  if (canDegradeStandard && !isOnlyPreflightUnvotedBlock) {
     verdict = "PASS_WITH_DEGRADATION";
     details.degradedFromBlockedRules = [...blockedRules];
     finalBlockedRules = [];
-  } else if (blockedRules.length > 0) {
+  } else if (blockedRules.length > 0 && !canDegradePreflightOnly) {
     verdict = "REJECT";
   } else {
-    const needsIndependentAudit =
-      hasCodeWrite && auditEscalation === "auto" && risk.tier === "TIER_1" && sessionRole === "main";
+    if (canDegradePreflightOnly) {
+      details.degradedFromBlockedRules = [...blockedRules];
+      finalBlockedRules = [];
+    }
 
     if (needsIndependentAudit) {
       if (!latestPostWriteAudit) {
         verdict = "ESCALATE_AUDIT_REQUIRED";
       } else if (latestPostWriteAudit.verdict === "PASS") {
         auditPassed = true;
-        verdict = warnedRules.length > 0 ? "PASS_WITH_WARNING" : "PASS";
+        verdict = canDegradePreflightOnly
+          ? "PASS_WITH_DEGRADATION"
+          : warnedRules.length > 0
+            ? "PASS_WITH_WARNING"
+            : "PASS";
       } else if (latestPostWriteAudit.verdict === "REJECT") {
         if (totalAuditRejects >= 2 && effectiveUnverifiedScope.length >= 1) {
           verdict = "PASS_WITH_AUDIT_DEGRADATION";
@@ -633,6 +648,8 @@ export function decideGate(input = {}, context = {}) {
         finalBlockedRules = ["R8_AUDIT_ERROR"];
         verdict = "REJECT";
       }
+    } else if (canDegradePreflightOnly) {
+      verdict = "PASS_WITH_DEGRADATION";
     } else if (warnedRules.length > 0) {
       verdict = "PASS_WITH_WARNING";
     } else {

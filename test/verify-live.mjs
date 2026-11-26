@@ -1500,15 +1500,10 @@ export function summarizeGovernance({
     ...preflightCompleteRecords.map((rec) => rec.verdict).filter((v) => typeof v === "string"),
     ...(Array.isArray(ledgerChallenges) ? ledgerChallenges.map((c) => c.verdict).filter((v) => typeof v === "string") : []),
   ];
+  const FILE_LINE_CITATION_RE = /[A-Za-z0-9_/-]+(?:\.[A-Za-z0-9_-]+)+:\d+/;
   const challengerHasFileLineCitation =
-    (Array.isArray(ledgerChallenges) &&
-      ledgerChallenges.some((c) => typeof c.tail === "string" && /[A-Za-z0-9._/-]+\.[A-Za-z0-9]+:\d+/.test(c.tail))) ||
-    safeSteps.some(
-      (step) =>
-        (step.type === "SYSTEM_MESSAGE" || step.type === "PLANNER_RESPONSE") &&
-        typeof step.content === "string" &&
-        /[A-Za-z0-9._/-]+\.[A-Za-z0-9]+:\d+/.test(step.content),
-    );
+    Array.isArray(ledgerChallenges) &&
+    ledgerChallenges.some((c) => typeof c?.tail === "string" && FILE_LINE_CITATION_RE.test(c.tail));
   const answeredVotesCount = Array.isArray(ledgerUserVotes)
     ? ledgerUserVotes.filter((v) => v && v.answered === true && v.errored !== true).length
     : 0;
