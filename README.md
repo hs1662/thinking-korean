@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-`hstack` (v2.1.2) is an Antigravity CLI governance plugin built on Node.js 18+ ESM with zero npm dependencies. It combines three layers in one plugin: a Korean-native thinking, UI, and response guard, a deterministic evidence-grounded completion gate, and an isolation plane with risk-tiered independent code auditing and fact-distilled cross-session handoff.
+`hstack` (v2.1.3) is an Antigravity CLI governance plugin built on Node.js 18+ ESM with zero npm dependencies. It combines three layers in one plugin: a Korean-native thinking, UI, and response guard, a deterministic evidence-grounded completion gate, and an isolation plane with risk-tiered independent code auditing and fact-distilled cross-session handoff.
 
 ## Architecture
 

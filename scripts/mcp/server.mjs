@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { appendAuditRecord, readGovernanceConfig, resolveSchemaRegister } from "../governance/audit-log.mjs";
 import { HANDOFF_COPY, REGISTER_COPY } from "../governance/constants.mjs";
@@ -15,7 +16,7 @@ import { resolveAuditEscalationMode } from "../governance/risk-classifier.mjs";
 import { isDirectExecution } from "../hook-io.mjs";
 
 const PROTOCOL_VERSION_DEFAULT = "2024-11-05";
-const SERVER_INFO = { name: "hstack-gate", version: "2.1.2" };
+const SERVER_INFO = { name: "hstack-gate", version: "2.1.3" };
 const PUBLIC_ARG_KEYS = new Set([
   "modified_files",
   "inspected_files",
@@ -284,7 +285,9 @@ export function createMcpServerHandler(options = {}) {
       };
     }
 
-    const skipNoSession = () => {
+    const roundMs = (startMs) => Math.max(0, Math.round((performance.now() - startMs) * 10) / 10);
+
+    const skipNoSession = ({ ledgerScanMs = null, gitScanMs = null } = {}) => {
       const decision = decideGate(publicArgs, { sessionMissing: true, register: schemaRegister });
       appendAuditRecord(
         {
@@ -304,6 +307,8 @@ export function createMcpServerHandler(options = {}) {
             inputTokens: null,
             cacheReadTokens: null,
             outputTokens: null,
+            ledgerScanMs,
+            gitScanMs,
           },
         },
         dataDir,
@@ -318,10 +323,15 @@ export function createMcpServerHandler(options = {}) {
       return skipNoSession();
     }
 
+    const gitScanStart = performance.now();
     const gitLedger = readGitLedger(cwd);
+    const gitScanMs = roundMs(gitScanStart);
+
+    const ledgerScanStart = performance.now();
     const ledger = readFactLedger(transcriptPath, cwd, gitLedger.gitRoot || "");
+    const ledgerScanMs = roundMs(ledgerScanStart);
     if (!ledger.transcriptAvailable) {
-      return skipNoSession();
+      return skipNoSession({ ledgerScanMs, gitScanMs });
     }
     const testInfra = detectTestInfrastructure(cwd, gitLedger.gitRoot || null);
     const governanceConfig = readGovernanceConfig(dataDir);
@@ -369,6 +379,8 @@ export function createMcpServerHandler(options = {}) {
           codeWrittenCount: ledger.turnCodeWrittenFiles.size,
           readCount: ledger.sessionReadFiles.size,
           verificationExecCount: ledger.turnExecutions.filter((exec) => exec.kind === "verification").length,
+          ledgerScanMs,
+          gitScanMs,
         },
       },
       dataDir,

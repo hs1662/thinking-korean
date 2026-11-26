@@ -162,15 +162,35 @@ function normalizeEventType(record) {
   return "unknown";
 }
 
+const SCAN_LATENCY_ALIASES = {
+  ledgerScanMs: ["ledgerScanMs", "ledger_scan_ms", "ledgerMs", "ledger"],
+  gitScanMs: ["gitScanMs", "git_scan_ms", "gitMs", "git"],
+};
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 function extractScanLatency(record, key) {
-  const metrics = record.metrics && typeof record.metrics === "object" ? record.metrics : null;
-  const fromMetrics = toFiniteNumber(metrics?.[key]);
-  if (fromMetrics !== null && fromMetrics >= 0) {
-    return fromMetrics;
-  }
-  const fromTop = toFiniteNumber(record[key]);
-  if (fromTop !== null && fromTop >= 0) {
-    return fromTop;
+  const aliases = SCAN_LATENCY_ALIASES[key] ?? [key];
+  const containers = [
+    record.metrics,
+    record.metrics?.timings,
+    record.metrics?.scanMs,
+    record.timings,
+    record.scanMs,
+    record,
+  ];
+  for (const container of containers) {
+    if (!isPlainObject(container)) {
+      continue;
+    }
+    for (const alias of aliases) {
+      const value = toFiniteNumber(container[alias]);
+      if (value !== null && value >= 0) {
+        return value;
+      }
+    }
   }
   return null;
 }
