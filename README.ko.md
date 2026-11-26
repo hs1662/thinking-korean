@@ -144,7 +144,7 @@ node ./scripts/audit-report.mjs --days 7 --json
 node ./scripts/audit-report.mjs --file /path/to/audit.jsonl
 ```
 
-`--file`을 생략하면 `$PLUGIN_DATA/audit.jsonl`, `$ANTIGRAVITY_APP_DATA_DIR/plugin_data/hstack/audit.jsonl`, `~/.gemini/antigravity-cli/plugin_data/hstack/audit.jsonl`, `resolvePluginDataDir()/audit.jsonl` 순서로 기본 로그 파일을 찾습니다.
+`--file`을 생략하면 `$PLUGIN_DATA/audit.jsonl`, `$HSTACK_DATA_DIR/audit.jsonl`, `$ANTIGRAVITY_APP_DATA_DIR/plugin_data/hstack/audit.jsonl`, `~/.gemini/antigravity-cli/plugin_data/hstack/audit.jsonl`, `resolvePluginDataDir()/audit.jsonl` 순서로 기본 로그 파일을 찾습니다.
 
 ## 검증 및 테스트
 

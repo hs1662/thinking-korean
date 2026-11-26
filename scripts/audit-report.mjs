@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { isDirectExecution, resolvePluginDataDir } from "./hook-io.mjs";
 
@@ -17,10 +17,22 @@ const VERDICT_ORDER = [
 
 const SESSION_ROLES = ["main", "auditor", "worker"];
 const SCHEMA_REGISTERS = ["neutral", "audit"];
-const AUDIT_VERDICT_KEYS = ["PASS", "REJECT", "PASS_WITH_AUDIT_DEGRADATION"];
 const RISK_REASON_KEYS = ["sensitive_path", "large_file_count", "large_diff_lines"];
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function mapToPlainCounts(map) {
+  const out = {};
+  for (const [key, value] of map.entries()) {
+    Object.defineProperty(out, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return out;
+}
 
 export const USAGE_TEXT = [
   "사용법: node ./scripts/audit-report.mjs [옵션]",
@@ -194,26 +206,31 @@ export function resolveAuditLogPath(options = {}) {
     return resolve(explicitFile);
   }
 
+  const hasCustomEnv = options.env !== undefined;
   const env = options.env ?? process.env;
   const checkExists = typeof options.existsSync === "function" ? options.existsSync : existsSync;
   const home = typeof options.homedir === "string" && options.homedir.length > 0 ? options.homedir : homedir();
-  const candidates = [];
 
-  if (typeof env.PLUGIN_DATA === "string" && env.PLUGIN_DATA.trim().length > 0) {
-    candidates.push(join(env.PLUGIN_DATA.trim(), "audit.jsonl"));
-  }
-  if (typeof env.ANTIGRAVITY_APP_DATA_DIR === "string" && env.ANTIGRAVITY_APP_DATA_DIR.trim().length > 0) {
-    candidates.push(join(env.ANTIGRAVITY_APP_DATA_DIR.trim(), "plugin_data", "hstack", "audit.jsonl"));
-  }
-  candidates.push(join(home, ".gemini", "antigravity-cli", "plugin_data", "hstack", "audit.jsonl"));
-  candidates.push(join(resolvePluginDataDir(), "audit.jsonl"));
-
-  for (const candidate of candidates) {
-    if (checkExists(candidate)) {
-      return candidate;
+  for (const key of ["PLUGIN_DATA", "HSTACK_DATA_DIR"]) {
+    if (typeof env[key] === "string" && env[key].trim().length > 0) {
+      return join(env[key].trim(), "audit.jsonl");
     }
   }
-  return candidates[0];
+  if (typeof env.ANTIGRAVITY_APP_DATA_DIR === "string" && env.ANTIGRAVITY_APP_DATA_DIR.trim().length > 0) {
+    return join(env.ANTIGRAVITY_APP_DATA_DIR.trim(), "plugin_data", "hstack", "audit.jsonl");
+  }
+
+  const defaultHomePath = join(home, ".gemini", "antigravity-cli", "plugin_data", "hstack", "audit.jsonl");
+  const fallbackDataDir = hasCustomEnv ? join(tmpdir(), "hstack-data") : resolvePluginDataDir();
+  const fallbackPath = join(fallbackDataDir, "audit.jsonl");
+
+  if (checkExists(defaultHomePath)) {
+    return defaultHomePath;
+  }
+  if (checkExists(fallbackPath)) {
+    return fallbackPath;
+  }
+  return defaultHomePath;
 }
 
 export function parseCliArgs(argv) {
@@ -380,7 +397,7 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
     stop_decision: 0,
     other: 0,
   };
-  const verdicts = Object.fromEntries(VERDICT_ORDER.map((v) => [v, 0]));
+  const verdictsMap = new Map(VERDICT_ORDER.map((v) => [v, 0]));
   const sessionRoles = { main: 0, auditor: 0, worker: 0, unknown: 0 };
   const schemaRegisters = { neutral: 0, audit: 0, unknown: 0 };
   const periodMap = new Map();
@@ -393,8 +410,14 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
 
   const tierCounts = { TIER_0: 0, TIER_1: 0, unknown: 0 };
   let tier1Escalations = 0;
-  const auditVerdictCounts = { PASS: 0, REJECT: 0, PASS_WITH_AUDIT_DEGRADATION: 0 };
-  const riskReasonCounts = Object.fromEntries(RISK_REASON_KEYS.map((key) => [key, 0]));
+  const auditVerdictCounts = {
+    PASS: 0,
+    REJECT: 0,
+    PASS_WITH_AUDIT_DEGRADATION: 0,
+    ERROR: 0,
+    MISSING_VERDICT: 0,
+  };
+  const riskReasonMap = new Map(RISK_REASON_KEYS.map((key) => [key, 0]));
 
   let pollutionCheckedCount = 0;
   let pollutionAlertCount = 0;
@@ -416,7 +439,7 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
     }
 
     const ev = rec._eventType;
-    if (ev in eventCounts) {
+    if (Object.hasOwn(eventCounts, ev)) {
       eventCounts[ev] += 1;
     } else {
       eventCounts.other += 1;
@@ -450,7 +473,7 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
 
     gateTotal += 1;
     const verdict = typeof rec.verdict === "string" ? rec.verdict : "UNKNOWN";
-    verdicts[verdict] = (verdicts[verdict] ?? 0) + 1;
+    verdictsMap.set(verdict, (verdictsMap.get(verdict) ?? 0) + 1);
     if (verdict === "REJECT") {
       gateRejects += 1;
     }
@@ -528,12 +551,16 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
       auditVerdictCounts.PASS += 1;
     } else if (rec.auditVerdict === "REJECT") {
       auditVerdictCounts.REJECT += 1;
+    } else if (rec.auditVerdict === "ERROR") {
+      auditVerdictCounts.ERROR += 1;
+    } else if (rec.auditVerdict === "MISSING_VERDICT") {
+      auditVerdictCounts.MISSING_VERDICT += 1;
     }
 
     if (Array.isArray(rec.riskReasons)) {
       for (const reason of rec.riskReasons) {
         if (typeof reason !== "string" || reason.length === 0) continue;
-        riskReasonCounts[reason] = (riskReasonCounts[reason] ?? 0) + 1;
+        riskReasonMap.set(reason, (riskReasonMap.get(reason) ?? 0) + 1);
       }
     }
 
@@ -564,7 +591,14 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
     }));
 
   const auditDecidedTotal =
-    auditVerdictCounts.PASS + auditVerdictCounts.REJECT + auditVerdictCounts.PASS_WITH_AUDIT_DEGRADATION;
+    auditVerdictCounts.PASS +
+    auditVerdictCounts.REJECT +
+    auditVerdictCounts.PASS_WITH_AUDIT_DEGRADATION +
+    auditVerdictCounts.ERROR +
+    auditVerdictCounts.MISSING_VERDICT;
+
+  const verdicts = mapToPlainCounts(verdictsMap);
+  const riskReasonCounts = mapToPlainCounts(riskReasonMap);
 
   return {
     meta: {
@@ -696,7 +730,7 @@ export function formatAuditReportTable(summary) {
   );
   lines.push(`- 에스컬레이션(ESCALATE_AUDIT_REQUIRED): ${tier1Audit.escalations}건`);
   lines.push(
-    `- 감사 판정: PASS=${tier1Audit.auditVerdicts.PASS}, REJECT=${tier1Audit.auditVerdicts.REJECT}, PASS_WITH_AUDIT_DEGRADATION=${tier1Audit.auditVerdicts.PASS_WITH_AUDIT_DEGRADATION} | 통과율: ${tier1Audit.auditDecidedTotal > 0 ? `${tier1Audit.auditPassRate.toFixed(1)}%` : "-"}`,
+    `- 감사 판정: PASS=${tier1Audit.auditVerdicts.PASS}, REJECT=${tier1Audit.auditVerdicts.REJECT}, PASS_WITH_AUDIT_DEGRADATION=${tier1Audit.auditVerdicts.PASS_WITH_AUDIT_DEGRADATION}, ERROR=${tier1Audit.auditVerdicts.ERROR}, MISSING_VERDICT=${tier1Audit.auditVerdicts.MISSING_VERDICT} | 통과율: ${tier1Audit.auditDecidedTotal > 0 ? `${tier1Audit.auditPassRate.toFixed(1)}%` : "-"}`,
   );
   const reasonParts = Object.entries(tier1Audit.riskReasons).map(([reason, count]) => `${reason}=${count}`);
   lines.push(`- 위험 사유 분포: ${reasonParts.join(", ")}`);

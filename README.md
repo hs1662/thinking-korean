@@ -144,7 +144,7 @@ node ./scripts/audit-report.mjs --days 7 --json
 node ./scripts/audit-report.mjs --file /path/to/audit.jsonl
 ```
 
-Default file resolution checks `--file`, `$PLUGIN_DATA/audit.jsonl`, `$ANTIGRAVITY_APP_DATA_DIR/plugin_data/hstack/audit.jsonl`, `~/.gemini/antigravity-cli/plugin_data/hstack/audit.jsonl`, and `resolvePluginDataDir()/audit.jsonl` in order.
+Default file resolution checks `--file`, `$PLUGIN_DATA/audit.jsonl`, `$HSTACK_DATA_DIR/audit.jsonl`, `$ANTIGRAVITY_APP_DATA_DIR/plugin_data/hstack/audit.jsonl`, `~/.gemini/antigravity-cli/plugin_data/hstack/audit.jsonl`, and `resolvePluginDataDir()/audit.jsonl` in order.
 
 ## Verification and tests
 
