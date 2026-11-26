@@ -924,4 +924,31 @@ describe("regressions: summarizer boilerplate, spaced Korean UI prefixes, and pr
       assert.notEqual(analyzeUiTexts([properName]).status, "drifted", `expected proper noun pass for: ${properName}`);
     }
   });
+
+  it("strips conversation:// URLs without exempting English link labels or English prose", () => {
+    const markdownLinkKorean =
+      "서브에이전트 작업 결과를 확인했고 상세 실행 기록은 [작업 기록](conversation://5a89d762-3f3b-4fa5-a674-79cded87847b)에서 바로 조회할 수 있습니다.";
+    const standaloneUrlKorean =
+      "격리 작업 세션 conversation://5a89d762-3f3b-4fa5-a674-79cded87847b 의 수정 파일과 검증 명령 통과 결과를 모두 확인했습니다.";
+    const englishLabelLink =
+      "세션 결과 확인: [Click here to view full subagent execution log](conversation://5a89d762-3f3b-4fa5-a674-79cded87847b) 완료.";
+    const englishBodyWithLink =
+      "All subagent checks passed cleanly and you can inspect [작업 기록](conversation://5a89d762-3f3b-4fa5-a674-79cded87847b) right now.";
+
+    assert.equal(extractNaturalText(markdownLinkKorean).includes("conversation"), false);
+    assert.equal(extractNaturalText(standaloneUrlKorean).includes("conversation"), false);
+
+    const markdownAnalysis = analyzeField("content", markdownLinkKorean);
+    assert.equal(markdownAnalysis.status, "korean");
+    assert.equal(markdownAnalysis.driftReason, "none");
+    assert.equal(markdownAnalysis.latinCount, 0);
+
+    const standaloneAnalysis = analyzeField("content", standaloneUrlKorean);
+    assert.equal(standaloneAnalysis.status, "korean");
+    assert.equal(standaloneAnalysis.driftReason, "none");
+    assert.equal(standaloneAnalysis.latinCount, 0);
+
+    assert.equal(analyzeField("content", englishLabelLink).status, "drifted");
+    assert.equal(analyzeField("content", englishBodyWithLink).status, "drifted");
+  });
 });
