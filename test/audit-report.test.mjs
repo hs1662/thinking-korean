@@ -202,6 +202,8 @@ describe("audit-report parser and aggregator", () => {
       PASS: 1,
       REJECT: 0,
       PASS_WITH_AUDIT_DEGRADATION: 1,
+      ERROR: 0,
+      MISSING_VERDICT: 0,
     });
     assert.equal(summary.tier1Audit.auditPassRate, 50);
     assert.deepEqual(summary.tier1Audit.riskReasons, {
@@ -267,19 +269,89 @@ describe("audit-report parser and aggregator", () => {
     const resolvedExplicit = resolveAuditLogPath({ file: "./custom-audit.jsonl" });
     assert.equal(resolvedExplicit, resolve("./custom-audit.jsonl"));
 
-    const existing = new Set(["/data/app/plugin_data/hstack/audit.jsonl"]);
-    const resolvedAppData = resolveAuditLogPath({
-      env: { PLUGIN_DATA: "/missing/plugin", ANTIGRAVITY_APP_DATA_DIR: "/data/app" },
+    const resolvedPluginData = resolveAuditLogPath({
+      env: { PLUGIN_DATA: "/isolated/plugin", HSTACK_DATA_DIR: "/other/hstack", ANTIGRAVITY_APP_DATA_DIR: "/data/app" },
       homedir: "/home/tester",
-      existsSync: (p) => existing.has(p),
+      existsSync: (p) => p === "/home/tester/.gemini/antigravity-cli/plugin_data/hstack/audit.jsonl",
+    });
+    assert.equal(resolvedPluginData, "/isolated/plugin/audit.jsonl");
+
+    const resolvedHstackData = resolveAuditLogPath({
+      env: { HSTACK_DATA_DIR: "/isolated/hstack", ANTIGRAVITY_APP_DATA_DIR: "/data/app" },
+      homedir: "/home/tester",
+      existsSync: (p) => p === "/home/tester/.gemini/antigravity-cli/plugin_data/hstack/audit.jsonl",
+    });
+    assert.equal(resolvedHstackData, "/isolated/hstack/audit.jsonl");
+
+    const resolvedAppData = resolveAuditLogPath({
+      env: { ANTIGRAVITY_APP_DATA_DIR: "/data/app" },
+      homedir: "/home/tester",
+      existsSync: () => false,
     });
     assert.equal(resolvedAppData, "/data/app/plugin_data/hstack/audit.jsonl");
+
+    const resolvedHomeFallback = resolveAuditLogPath({
+      env: {},
+      homedir: "/home/tester",
+      existsSync: (p) => p === "/home/tester/.gemini/antigravity-cli/plugin_data/hstack/audit.jsonl",
+    });
+    assert.equal(resolvedHomeFallback, "/home/tester/.gemini/antigravity-cli/plugin_data/hstack/audit.jsonl");
 
     assert.throws(() => parseCliArgs(["--days", "0"]), /1 이상의 정수/);
     assert.throws(() => parseCliArgs(["--days", "abc"]), /1 이상의 정수/);
     assert.throws(() => parseCliArgs(["--since", "2026-02-30"]), /YYYY-MM-DD/);
     assert.throws(() => parseCliArgs(["--group-by", "month"]), /day 또는 week/);
     assert.throws(() => parseCliArgs(["--unknown-flag"]), /알 수 없는 옵션/);
+  });
+
+  it("counts ERROR/MISSING_VERDICT in auditPassRate and prevents prototype key collisions", () => {
+    const parsed = parseAuditLines(
+      [
+        JSON.stringify({
+          ts: "2026-11-26T01:00:00.000Z",
+          eventType: "gate_verify",
+          verdict: "PASS",
+          riskTier: "TIER_1",
+          auditVerdict: "PASS",
+          riskReasons: ["sensitive_path"],
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T01:01:00.000Z",
+          eventType: "gate_verify",
+          verdict: "REJECT",
+          riskTier: "TIER_1",
+          auditVerdict: "ERROR",
+          blockedRules: ["R8_AUDIT_ERROR"],
+          riskReasons: ["toString", "constructor"],
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T01:02:00.000Z",
+          eventType: "gate_verify",
+          verdict: "toString",
+          riskTier: "TIER_1",
+          auditVerdict: "MISSING_VERDICT",
+          blockedRules: ["R8_AUDIT_ERROR"],
+          riskReasons: ["__proto__"],
+        }),
+      ].join("\n"),
+    );
+
+    const summary = summarizeAuditRecords(parsed, { filePath: "/tmp/audit.jsonl", fileExists: true });
+    assert.equal(summary.tier1Audit.auditVerdicts.PASS, 1);
+    assert.equal(summary.tier1Audit.auditVerdicts.ERROR, 1);
+    assert.equal(summary.tier1Audit.auditVerdicts.MISSING_VERDICT, 1);
+    assert.equal(summary.tier1Audit.auditDecidedTotal, 3);
+    assert.equal(summary.tier1Audit.auditPassRate, 33.3);
+    assert.equal(summary.overview.verdicts.toString, 1);
+    assert.equal(summary.tier1Audit.riskReasons.toString, 1);
+    assert.equal(summary.tier1Audit.riskReasons.constructor, 1);
+    assert.equal(summary.tier1Audit.riskReasons["__proto__"], 1);
+    assert.equal(typeof summary.overview.verdicts.toString, "number");
+    assert.equal(typeof summary.tier1Audit.riskReasons.constructor, "number");
+
+    const table = formatAuditReportTable(summary);
+    assert.ok(table.includes("ERROR=1"));
+    assert.ok(table.includes("MISSING_VERDICT=1"));
   });
 });
 
