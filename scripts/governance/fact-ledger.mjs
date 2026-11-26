@@ -9,15 +9,21 @@ import {
   AUDITOR_SESSION_MARKER,
   AUDIT_PASS_TAG,
   AUDIT_REJECT_TAG,
+  CHALLENGER_AGENT_NAME,
+  CHALLENGER_SESSION_MARKER,
   CREATE_AS_READ_TOOL_NAMES,
   EXEC_TOOL_NAMES,
   GATE_TOOL_NAME,
   MCP_VERIFICATION_TOOL_NAMES,
   PASSING_VERDICTS,
+  PREFLIGHT_CONDITIONAL_TAG,
+  PREFLIGHT_PROCEED_TAG,
+  PREFLIGHT_RETHINK_TAG,
   READ_ONLY_BINARIES,
   READ_ONLY_GIT_SUBCOMMANDS,
   READ_TOOL_NAMES,
   SUBAGENT_TOOL_NAME,
+  USER_VOTE_TOOL_NAMES,
   VERDICT_HEADERS,
   VERIFICATION_BINARIES,
   WORKER_SESSION_MARKER,
@@ -36,9 +42,15 @@ const SUBAGENT_CONVERSATION_ID_GLOBAL_RE = /["']?(?:conversationId|conversation_
 const SUBAGENT_SENDER_MSG_RE = /sender=([0-9a-f-]{8,64})\b/i;
 const SYSTEM_WRAPPER_LINE_RE = /^<\/?(?:SYSTEM_MESSAGE|USER_REQUEST|ADDITIONAL_METADATA)>$/i;
 const AUDITOR_MARKER_LINE_RE = /^\[hstack:독립감사\]$/;
+const CHALLENGER_MARKER_LINE_RE = /^\[hstack:사전검토\]$/;
 const WORKER_MARKER_LINE_RE = /^\[hstack:격리작업\]$/;
-const INJECTED_CONTEXT_LINE_RE = /^(?:작업 경로:|세션 기록 경로:|현재 턴 시작 스텝:|-\s*작업 디렉터리:)/;
+const INJECTED_CONTEXT_LINE_RE =
+  /^(?:작업 경로:|세션 기록 경로:|현재 턴 시작 스텝:|-\s*작업 디렉터리:|위 작업 경로의 실제 파일과 호출 관계를 직접 읽고)/;
 const ALLOWED_SUBAGENT_SYSTEM_SOURCES = new Set(["SYSTEM"]);
+const SESSION_ROLE_PRIORITY = { main: 0, worker: 1, challenger: 2, auditor: 3 };
+const VOTE_TIMESTAMP_LINE_RE = /^(?:Created|Completed)\s+At:/i;
+const VOTE_ANSWER_LINE_RE = /^A\d+\s*:\s*(.*)$/;
+const VOTE_ERROR_CONTENT_RE = /^(?:Error:|Tool error:|Failed to|Cancelled|Canceled|User cancelled|Rejected)/i;
 
 const SHELL_WRAPPERS = new Set(["sudo", "time", "env", "command", "nohup"]);
 const WRAPPER_FLAGS_WITH_ARG = {
@@ -655,6 +667,22 @@ function isAuditorTypeName(typeName) {
   return typeName === AUDITOR_AGENT_NAME || typeName === `hstack:${AUDITOR_AGENT_NAME}`;
 }
 
+function isChallengerTypeName(typeName) {
+  return typeName === CHALLENGER_AGENT_NAME || typeName === `hstack:${CHALLENGER_AGENT_NAME}`;
+}
+
+function extractLastMeaningfulLine(fullContent) {
+  const tail = extractTail(fullContent, AUDIT_TAIL_MAX_CHARS);
+  const lines = tail
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith(PRE_TOOL_NOTICE_PREFIX) && !SYSTEM_WRAPPER_LINE_RE.test(line));
+  if (lines.length === 0) {
+    return "";
+  }
+  return lines[lines.length - 1].replace(/^[*_\s]+|[*_\s]+$/g, "");
+}
+
 export function parseAuditVerdictFromText(fullContent, { status = "", error = "" } = {}) {
   const normStatus = typeof status === "string" ? status.trim().toUpperCase() : "";
   const normError = typeof error === "string" ? error.trim() : "";
@@ -664,26 +692,77 @@ export function parseAuditVerdictFromText(fullContent, { status = "", error = ""
   if (typeof fullContent !== "string" || fullContent.trim().length === 0) {
     return "MISSING_VERDICT";
   }
-  const tail = extractTail(fullContent, AUDIT_TAIL_MAX_CHARS);
-  const lines = tail
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith(PRE_TOOL_NOTICE_PREFIX) && !SYSTEM_WRAPPER_LINE_RE.test(line));
-
-  if (lines.length === 0) {
-    return "MISSING_VERDICT";
-  }
-
-  const stripEmphasisOnly = (line) => line.replace(/^[*_\s]+|[*_\s]+$/g, "");
-  const lastLine = stripEmphasisOnly(lines[lines.length - 1]);
+  const lastLine = extractLastMeaningfulLine(fullContent);
   if (lastLine === AUDIT_PASS_TAG) {
     return "PASS";
   }
   if (lastLine === AUDIT_REJECT_TAG) {
     return "REJECT";
   }
-
   return "MISSING_VERDICT";
+}
+
+export function parsePreflightVerdictFromText(fullContent, { status = "", error = "" } = {}) {
+  const normStatus = typeof status === "string" ? status.trim().toUpperCase() : "";
+  const normError = typeof error === "string" ? error.trim() : "";
+  if (normStatus === "ERROR" || normStatus === "FAILED" || normError.length > 0) {
+    return "ERROR";
+  }
+  if (typeof fullContent !== "string" || fullContent.trim().length === 0) {
+    return "MISSING_VERDICT";
+  }
+  const lastLine = extractLastMeaningfulLine(fullContent);
+  if (lastLine === PREFLIGHT_PROCEED_TAG) {
+    return "PROCEED";
+  }
+  if (lastLine === PREFLIGHT_CONDITIONAL_TAG) {
+    return "CONDITIONAL";
+  }
+  if (lastLine === PREFLIGHT_RETHINK_TAG) {
+    return "RETHINK";
+  }
+  return "MISSING_VERDICT";
+}
+
+function parseUserVoteResult(rawContent, { status = "", error = "", isDenial = false } = {}) {
+  const normStatus = typeof status === "string" ? status.trim().toUpperCase() : "";
+  const normError = typeof error === "string" ? error.trim() : "";
+  if (isDenial || normStatus === "ERROR" || normStatus === "FAILED" || normStatus === "CANCELED" || normError.length > 0) {
+    return { answered: false, errored: true };
+  }
+  if (typeof rawContent !== "string" || rawContent.trim().length === 0) {
+    return { answered: false, errored: false };
+  }
+  const meaningfulLines = rawContent
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !line.startsWith(PRE_TOOL_NOTICE_PREFIX) &&
+        !VOTE_TIMESTAMP_LINE_RE.test(line) &&
+        !SYSTEM_WRAPPER_LINE_RE.test(line),
+    );
+  if (meaningfulLines.length === 0) {
+    return { answered: false, errored: false };
+  }
+  if (meaningfulLines.every((line) => VOTE_ERROR_CONTENT_RE.test(line))) {
+    return { answered: false, errored: true };
+  }
+  let sawAnswerPrefix = false;
+  for (const line of meaningfulLines) {
+    const answerMatch = line.match(VOTE_ANSWER_LINE_RE);
+    if (answerMatch) {
+      sawAnswerPrefix = true;
+      if (answerMatch[1].trim().length > 0) {
+        return { answered: true, errored: false };
+      }
+    }
+  }
+  if (sawAnswerPrefix) {
+    return { answered: false, errored: false };
+  }
+  return { answered: true, errored: false };
 }
 
 function extractSubagentConversationIds(text) {
@@ -706,7 +785,10 @@ function isAsyncSubagentLaunchAck(text) {
   return (
     SUBAGENT_CONVERSATION_ID_RE.test(text) &&
     !text.includes(AUDIT_PASS_TAG) &&
-    !text.includes(AUDIT_REJECT_TAG)
+    !text.includes(AUDIT_REJECT_TAG) &&
+    !text.includes(PREFLIGHT_PROCEED_TAG) &&
+    !text.includes(PREFLIGHT_CONDITIONAL_TAG) &&
+    !text.includes(PREFLIGHT_RETHINK_TAG)
   );
 }
 
@@ -720,6 +802,12 @@ function normalizeRoleLines(content) {
     .filter((line) => line.length > 0 && !SYSTEM_WRAPPER_LINE_RE.test(line));
 }
 
+function pickHigherSessionRole(current, candidate) {
+  const currentRank = SESSION_ROLE_PRIORITY[current] ?? 0;
+  const candidateRank = SESSION_ROLE_PRIORITY[candidate] ?? 0;
+  return candidateRank > currentRank ? candidate : current;
+}
+
 export function classifySessionRoleFromText(content, { requireBlockStructure = false } = {}) {
   const lines = normalizeRoleLines(content);
   if (lines.length === 0) {
@@ -731,6 +819,8 @@ export function classifySessionRoleFromText(content, { requireBlockStructure = f
     let candidate = null;
     if (AUDITOR_MARKER_LINE_RE.test(lines[i])) {
       candidate = "auditor";
+    } else if (CHALLENGER_MARKER_LINE_RE.test(lines[i])) {
+      candidate = "challenger";
     } else if (WORKER_MARKER_LINE_RE.test(lines[i])) {
       candidate = "worker";
     }
@@ -744,10 +834,10 @@ export function classifySessionRoleFromText(content, { requireBlockStructure = f
         continue;
       }
     }
-    if (candidate === "auditor") {
+    detected = pickHigherSessionRole(detected, candidate);
+    if (detected === "auditor") {
       return "auditor";
     }
-    detected = "worker";
   }
   return detected;
 }
@@ -799,11 +889,9 @@ export function detectSessionRoleFromHeaderSteps(steps) {
       continue;
     }
     const candidate = detectSessionRoleFromHeaderStep(step);
-    if (candidate === "auditor") {
+    role = pickHigherSessionRole(role, candidate);
+    if (role === "auditor") {
       return "auditor";
-    }
-    if (candidate === "worker" && role === "main") {
-      role = "worker";
     }
   }
   return role;
@@ -923,6 +1011,9 @@ function createEmptyLedger(transcriptAvailable = false) {
     turnSubagentAudits: [],
     pendingAsyncAuditorCount: 0,
     pendingAsyncAuditsAfterLastWrite: 0,
+    turnPreflightChallenges: [],
+    pendingAsyncChallenges: 0,
+    turnUserVotes: [],
     latestTokens: { inputTokens: null, cacheReadTokens: null, outputTokens: null },
     gateBlockedThisTurn: false,
   };
@@ -934,17 +1025,14 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
   let seenFirstUserInput = false;
   let seenFirstPlannerResponse = false;
   const asyncAuditsByConversationId = new Map();
+  const asyncChallengesByConversationId = new Map();
 
   const applyHeaderSessionRole = (record) => {
     if (seenFirstPlannerResponse || ledger.sessionRole === "auditor") {
       return;
     }
     const candidate = detectSessionRoleFromHeaderStep(record);
-    if (candidate === "auditor") {
-      ledger.sessionRole = "auditor";
-    } else if (candidate === "worker" && ledger.sessionRole === "main") {
-      ledger.sessionRole = "worker";
-    }
+    ledger.sessionRole = pickHigherSessionRole(ledger.sessionRole, candidate);
   };
 
   const resetTurn = (stepIndex) => {
@@ -961,16 +1049,23 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
     ledger.turnSubagentAudits = [];
     ledger.pendingAsyncAuditorCount = 0;
     ledger.pendingAsyncAuditsAfterLastWrite = 0;
+    ledger.turnPreflightChallenges = [];
+    ledger.pendingAsyncChallenges = 0;
+    ledger.turnUserVotes = [];
     ledger.gateBlockedThisTurn = false;
     pendingCalls = [];
     asyncAuditsByConversationId.clear();
+    asyncChallengesByConversationId.clear();
   };
 
   const peekNeedsGeneric = () => {
     const nextPending = pendingCalls[0];
     return Boolean(
       nextPending &&
-        (nextPending.kind === "exec" || nextPending.kind === "gate" || nextPending.kind === "audit_subagent"),
+        (nextPending.kind === "exec" ||
+          nextPending.kind === "gate" ||
+          nextPending.kind === "managed_subagent" ||
+          nextPending.kind === "user_vote"),
     );
   };
 
@@ -1010,18 +1105,43 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
         if (msgContent.includes(GATE_STOP_MARKER)) {
           ledger.gateBlockedThisTurn = true;
         }
-        if (asyncAuditsByConversationId.size > 0 && msgContent.length > 0) {
+        if ((asyncAuditsByConversationId.size > 0 || asyncChallengesByConversationId.size > 0) && msgContent.length > 0) {
           const senderMatch = msgContent.match(SUBAGENT_SENDER_MSG_RE);
           const senderId = senderMatch ? senderMatch[1] : "";
-          const tracked = senderId ? asyncAuditsByConversationId.get(senderId) : null;
-          if (tracked) {
-            tracked.completedStepIndex = Math.max(tracked.completedStepIndex ?? tracked.launchedStepIndex, stepIndex);
-            tracked.stepIndex = tracked.completedStepIndex;
-            tracked.tail = extractTail(msgContent, AUDIT_TAIL_MAX_CHARS);
-            const parsedVerdict = parseAuditVerdictFromText(msgContent);
-            tracked.verdict = parsedVerdict;
-            if (parsedVerdict === "PASS" || parsedVerdict === "REJECT" || parsedVerdict === "ERROR") {
-              asyncAuditsByConversationId.delete(senderId);
+          if (senderId) {
+            const trackedAudit = asyncAuditsByConversationId.get(senderId);
+            if (trackedAudit) {
+              trackedAudit.completedStepIndex = Math.max(
+                trackedAudit.completedStepIndex >= 0 ? trackedAudit.completedStepIndex : trackedAudit.launchedStepIndex,
+                stepIndex,
+              );
+              trackedAudit.stepIndex = trackedAudit.completedStepIndex;
+              trackedAudit.tail = extractTail(msgContent, AUDIT_TAIL_MAX_CHARS);
+              const parsedVerdict = parseAuditVerdictFromText(msgContent);
+              trackedAudit.verdict = parsedVerdict;
+              if (parsedVerdict === "PASS" || parsedVerdict === "REJECT" || parsedVerdict === "ERROR") {
+                asyncAuditsByConversationId.delete(senderId);
+              }
+            }
+
+            const trackedChallenge = asyncChallengesByConversationId.get(senderId);
+            if (trackedChallenge) {
+              trackedChallenge.completedStepIndex = Math.max(
+                trackedChallenge.completedStepIndex >= 0 ? trackedChallenge.completedStepIndex : trackedChallenge.launchedStepIndex,
+                stepIndex,
+              );
+              trackedChallenge.stepIndex = trackedChallenge.completedStepIndex;
+              trackedChallenge.tail = extractTail(msgContent, AUDIT_TAIL_MAX_CHARS);
+              const parsedVerdict = parsePreflightVerdictFromText(msgContent);
+              trackedChallenge.verdict = parsedVerdict;
+              if (
+                parsedVerdict === "PROCEED" ||
+                parsedVerdict === "CONDITIONAL" ||
+                parsedVerdict === "RETHINK" ||
+                parsedVerdict === "ERROR"
+              ) {
+                asyncChallengesByConversationId.delete(senderId);
+              }
             }
           }
         }
@@ -1093,21 +1213,27 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
             };
             ledger.turnGateAttempts.push(entry);
             pendingCalls.push({ kind: "gate", entry });
+          } else if (USER_VOTE_TOOL_NAMES.has(name)) {
+            const entry = {
+              toolName: name,
+              launchedStepIndex: stepIndex,
+              completedStepIndex: -1,
+              answered: false,
+              errored: false,
+            };
+            ledger.turnUserVotes.push(entry);
+            pendingCalls.push({ kind: "user_vote", entry });
           } else if (name === SUBAGENT_TOOL_NAME) {
             const typeNames = extractSubagentTypeNames(call);
-            const auditorIndices = [];
+            const auditEntries = [];
+            const challengeEntries = [];
             for (let idx = 0; idx < typeNames.length; idx += 1) {
               if (isAuditorTypeName(typeNames[idx])) {
-                auditorIndices.push(idx);
-              }
-            }
-            if (auditorIndices.length > 0) {
-              const entries = auditorIndices.map((slotIndex) => {
                 const entry = {
                   stepIndex,
                   launchedStepIndex: stepIndex,
                   completedStepIndex: stepIndex,
-                  slotIndex,
+                  slotIndex: idx,
                   totalSlots: typeNames.length,
                   typeName: AUDITOR_AGENT_NAME,
                   verdict: "MISSING_VERDICT",
@@ -1115,9 +1241,25 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
                   tail: "",
                 };
                 ledger.turnSubagentAudits.push(entry);
-                return entry;
-              });
-              pendingCalls.push({ kind: "audit_subagent", entries });
+                auditEntries.push(entry);
+              } else if (isChallengerTypeName(typeNames[idx])) {
+                const entry = {
+                  stepIndex,
+                  launchedStepIndex: stepIndex,
+                  completedStepIndex: -1,
+                  slotIndex: idx,
+                  totalSlots: typeNames.length,
+                  typeName: CHALLENGER_AGENT_NAME,
+                  verdict: "MISSING_VERDICT",
+                  conversationId: "",
+                  tail: "",
+                };
+                ledger.turnPreflightChallenges.push(entry);
+                challengeEntries.push(entry);
+              }
+            }
+            if (auditEntries.length > 0 || challengeEntries.length > 0) {
+              pendingCalls.push({ kind: "managed_subagent", auditEntries, challengeEntries });
             } else {
               pendingCalls.push({ kind: "other" });
             }
@@ -1159,33 +1301,76 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
           const verdict = parseGateVerdictFromText(typeof parsed.content === "string" ? parsed.content : "");
           pending.entry.verdict = verdict;
           pending.entry.passed = PASSING_VERDICTS.has(verdict);
-        } else if (pending.kind === "audit_subagent") {
+        } else if (pending.kind === "user_vote") {
+          const rawText = typeof parsed.content === "string" ? parsed.content : "";
+          const voteRes = parseUserVoteResult(rawText, {
+            status,
+            error,
+            isDenial: isPreToolDenialStep(parsed),
+          });
+          pending.entry.completedStepIndex = stepIndex;
+          pending.entry.answered = voteRes.answered;
+          pending.entry.errored = voteRes.errored;
+        } else if (pending.kind === "managed_subagent") {
           const rawText = typeof parsed.content === "string" ? parsed.content : "";
           const convIds = extractSubagentConversationIds(rawText);
           const isDenial = isPreToolDenialStep(parsed);
-          const directVerdict = parseAuditVerdictFromText(rawText, { status, error });
-          const isMixedBatch = pending.entries.some((e) => e.totalSlots > 1);
+          const isLaunchAck = isAsyncSubagentLaunchAck(rawText);
 
-          for (const entry of pending.entries) {
-            entry.tail = extractTail(rawText, AUDIT_TAIL_MAX_CHARS);
-            const matchedId =
-              entry.totalSlots > 1
-                ? (convIds[entry.slotIndex] ?? "")
-                : (convIds[0] ?? "");
-            if (matchedId) {
-              entry.conversationId = matchedId;
+          if (pending.auditEntries.length > 0) {
+            const directAuditVerdict = parseAuditVerdictFromText(rawText, { status, error });
+            const isMixedBatch = pending.auditEntries.some((e) => e.totalSlots > 1);
+            for (const entry of pending.auditEntries) {
+              entry.tail = extractTail(rawText, AUDIT_TAIL_MAX_CHARS);
+              const matchedId =
+                entry.totalSlots > 1
+                  ? (convIds[entry.slotIndex] ?? "")
+                  : (convIds[0] ?? "");
+              if (matchedId) {
+                entry.conversationId = matchedId;
+              }
+              if (isDenial) {
+                entry.verdict = "ERROR";
+              } else if (matchedId && isLaunchAck) {
+                entry.verdict = "MISSING_VERDICT";
+                asyncAuditsByConversationId.set(matchedId, entry);
+              } else if (isMixedBatch && !matchedId) {
+                entry.verdict = directAuditVerdict === "ERROR" ? "ERROR" : "MISSING_VERDICT";
+              } else {
+                entry.verdict = directAuditVerdict;
+              }
             }
-            if (isDenial) {
-              entry.verdict = "ERROR";
-            } else if (matchedId && isAsyncSubagentLaunchAck(rawText)) {
-              entry.verdict = "MISSING_VERDICT";
-              asyncAuditsByConversationId.set(matchedId, entry);
-            } else if (isMixedBatch && !matchedId) {
-              entry.verdict = directVerdict === "ERROR" ? "ERROR" : "MISSING_VERDICT";
-            } else if (directVerdict === "PASS" || directVerdict === "REJECT" || directVerdict === "ERROR") {
-              entry.verdict = directVerdict;
-            } else {
-              entry.verdict = directVerdict;
+          }
+
+          if (pending.challengeEntries.length > 0) {
+            const directChallengeVerdict = parsePreflightVerdictFromText(rawText, { status, error });
+            const isMixedBatch = pending.challengeEntries.some((e) => e.totalSlots > 1);
+            for (const entry of pending.challengeEntries) {
+              entry.tail = extractTail(rawText, AUDIT_TAIL_MAX_CHARS);
+              const matchedId =
+                entry.totalSlots > 1
+                  ? (convIds[entry.slotIndex] ?? "")
+                  : (convIds[0] ?? "");
+              if (matchedId) {
+                entry.conversationId = matchedId;
+              }
+              if (isDenial) {
+                entry.verdict = "ERROR";
+                entry.completedStepIndex = stepIndex;
+                entry.stepIndex = stepIndex;
+              } else if (matchedId && isLaunchAck) {
+                entry.verdict = "MISSING_VERDICT";
+                entry.completedStepIndex = -1;
+                asyncChallengesByConversationId.set(matchedId, entry);
+              } else if (isMixedBatch && !matchedId) {
+                entry.verdict = directChallengeVerdict === "ERROR" ? "ERROR" : "MISSING_VERDICT";
+                entry.completedStepIndex = stepIndex;
+                entry.stepIndex = stepIndex;
+              } else {
+                entry.verdict = directChallengeVerdict;
+                entry.completedStepIndex = stepIndex;
+                entry.stepIndex = stepIndex;
+              }
             }
           }
         }
@@ -1214,6 +1399,7 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
     }
   }
   ledger.pendingAsyncAuditsAfterLastWrite = pendingAfterLastWrite;
+  ledger.pendingAsyncChallenges = asyncChallengesByConversationId.size;
   return ledger;
 }
 

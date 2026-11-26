@@ -5,6 +5,9 @@ import {
   AUDITOR_AGENT_NAME,
   AUDITOR_ROLE_LABEL,
   AUDITOR_SESSION_MARKER,
+  CHALLENGER_AGENT_NAME,
+  CHALLENGER_ROLE_LABEL,
+  CHALLENGER_SESSION_MARKER,
   HANDOFF_TOOL_NAME,
   SUBAGENT_TOOL_NAME,
   WORKER_AGENT_NAME,
@@ -38,6 +41,9 @@ function pickPreferredTranscriptPath(rawTranscriptPath) {
   return trimmed;
 }
 
+const CHALLENGER_GUIDANCE_LINE =
+  "위 작업 경로의 실제 파일과 호출 관계를 직접 읽고 사용자의 유도 전제에 동조하지 않은 채 근거(`파일:줄`) 기반 반론과 지정 판정 태그로만 보고하라.";
+
 function classifyManagedAgent(rawTypeName) {
   if (typeof rawTypeName !== "string") {
     return null;
@@ -45,6 +51,9 @@ function classifyManagedAgent(rawTypeName) {
   const normalized = rawTypeName.trim();
   if (normalized === AUDITOR_AGENT_NAME || normalized === `hstack:${AUDITOR_AGENT_NAME}`) {
     return "auditor";
+  }
+  if (normalized === CHALLENGER_AGENT_NAME || normalized === `hstack:${CHALLENGER_AGENT_NAME}`) {
+    return "challenger";
   }
   if (normalized === WORKER_AGENT_NAME || normalized === `hstack:${WORKER_AGENT_NAME}`) {
     return "worker";
@@ -63,7 +72,12 @@ function appendContextBlock(promptText, lines) {
 
 function buildInjectedPrompt(kind, existingPrompt, { cwd, transcriptPath, turnStartStepIndex }) {
   const safePrompt = typeof existingPrompt === "string" ? existingPrompt : "";
-  const marker = kind === "auditor" ? AUDITOR_SESSION_MARKER : WORKER_SESSION_MARKER;
+  const marker =
+    kind === "auditor"
+      ? AUDITOR_SESSION_MARKER
+      : kind === "challenger"
+        ? CHALLENGER_SESSION_MARKER
+        : WORKER_SESSION_MARKER;
   const lines = [];
   const hasStandaloneMarker = safePrompt.split(/\r?\n/).some((line) => line.trim() === marker);
   if (!hasStandaloneMarker) {
@@ -72,7 +86,7 @@ function buildInjectedPrompt(kind, existingPrompt, { cwd, transcriptPath, turnSt
   if (cwd && !safePrompt.includes(`작업 경로: \`${cwd}\``)) {
     lines.push(`작업 경로: \`${cwd}\``);
   }
-  if (kind === "auditor") {
+  if (kind === "auditor" || kind === "challenger") {
     if (transcriptPath && !safePrompt.includes(`세션 기록 경로: \`${transcriptPath}\``)) {
       lines.push(`세션 기록 경로: \`${transcriptPath}\``);
     }
@@ -83,6 +97,9 @@ function buildInjectedPrompt(kind, existingPrompt, { cwd, transcriptPath, turnSt
     ) {
       lines.push(`현재 턴 시작 스텝: \`${turnStartStepIndex}\``);
     }
+  }
+  if (kind === "challenger" && !safePrompt.includes(CHALLENGER_GUIDANCE_LINE)) {
+    lines.push(CHALLENGER_GUIDANCE_LINE);
   }
   if (lines.length === 0) {
     return safePrompt;
@@ -110,7 +127,12 @@ function rewriteSubagentEntry(entry, { cwd, transcriptPath, getTurnStart }) {
   if (!kind) {
     return { matched: false, value: entry };
   }
-  const roleLabel = kind === "auditor" ? AUDITOR_ROLE_LABEL : WORKER_ROLE_LABEL;
+  const roleLabel =
+    kind === "auditor"
+      ? AUDITOR_ROLE_LABEL
+      : kind === "challenger"
+        ? CHALLENGER_ROLE_LABEL
+        : WORKER_ROLE_LABEL;
   const promptKey = "Prompt" in entry || !("prompt" in entry) ? "Prompt" : "prompt";
   const roleKey = "Role" in entry || !("role" in entry) ? "Role" : "role";
   return {
@@ -121,7 +143,7 @@ function rewriteSubagentEntry(entry, { cwd, transcriptPath, getTurnStart }) {
       [promptKey]: buildInjectedPrompt(kind, entry[promptKey], {
         cwd,
         transcriptPath,
-        turnStartStepIndex: kind === "auditor" ? getTurnStart() : null,
+        turnStartStepIndex: kind === "auditor" || kind === "challenger" ? getTurnStart() : null,
       }),
     },
   };

@@ -64,8 +64,9 @@ export function handleStop(stdinText, readTextFile) {
     ledger = readFactLedger(transcriptPath, cwd, gitLedger.gitRoot || "");
   }
 
-  const isAuditorSession = ledger?.sessionRole === "auditor";
+  const isReadOnlyGovernanceRole = ledger?.sessionRole === "auditor" || ledger?.sessionRole === "challenger";
   const hasPendingAsyncAuditor = Boolean(ledger && ledger.pendingAsyncAuditsAfterLastWrite > 0);
+  const hasPendingAsyncChallenges = Boolean(ledger && ledger.pendingAsyncChallenges > 0);
   const gateBlockedThisTurn = Boolean(ledger?.gateBlockedThisTurn);
   const hasPassingPostWriteGate = Boolean(
     ledger &&
@@ -74,8 +75,9 @@ export function handleStop(stdinText, readTextFile) {
       ),
   );
   const gateViolation = Boolean(
-    !isAuditorSession &&
+    !isReadOnlyGovernanceRole &&
       !hasPendingAsyncAuditor &&
+      !hasPendingAsyncChallenges &&
       ledger &&
       ledger.transcriptAvailable &&
       ledger.turnWrittenFiles.size > 0 &&

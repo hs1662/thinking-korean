@@ -179,6 +179,7 @@ function buildRuleLine(rule, details, copy) {
   if (rule === "R7_HEDGE_DETECTED") return builder(details.hedgeHits);
   if (rule === "R8_AUDIT_REJECTED") return builder();
   if (rule === "R8_AUDIT_ERROR") return builder();
+  if (rule === "R9_PREFLIGHT_UNVOTED") return builder(details.preflightVerdict);
   return "";
 }
 
@@ -332,6 +333,7 @@ export function decideGate(input = {}, context = {}) {
     hedgeMatches: [],
     degradedFromBlockedRules: [],
     auditDegradationReason: null,
+    preflightVerdict: null,
   };
 
   const rawUnverifiedScope = normalizeStringList(input.unverified_scope);
@@ -342,6 +344,7 @@ export function decideGate(input = {}, context = {}) {
     ? context.auditEscalation
     : "auto";
   const emptyRisk = { tier: "TIER_0", reasons: [], matchedSensitiveFiles: [], changedLines: 0 };
+  const emptyPreflight = { used: false, verdict: null, voted: false };
 
   if (context.sessionMissing) {
     const verdict = "SKIPPED_NO_SESSION";
@@ -362,6 +365,7 @@ export function decideGate(input = {}, context = {}) {
       details,
       risk: emptyRisk,
       auditVerdict: null,
+      preflight: emptyPreflight,
       receiptText,
       metrics: {
         hedgeHits: 0,
@@ -387,6 +391,8 @@ export function decideGate(input = {}, context = {}) {
     turnExecutions: [],
     turnGateAttempts: [],
     turnSubagentAudits: [],
+    turnPreflightChallenges: [],
+    turnUserVotes: [],
   };
 
   const reportedModified = normalizePathList(input.modified_files, cwd, gitRoot);
@@ -524,6 +530,40 @@ export function decideGate(input = {}, context = {}) {
   const priorRejects = ledger.turnGateAttempts.filter((attempt) => attempt.verdict === "REJECT").length;
   const claimsAnyPass = verificationRuns.some((run) => run.outcome === "pass");
 
+  const sessionRole = typeof ledger.sessionRole === "string" && ledger.sessionRole.length > 0 ? ledger.sessionRole : "main";
+  const allChallenges = Array.isArray(ledger.turnPreflightChallenges) ? ledger.turnPreflightChallenges : [];
+  const completedChallenges = allChallenges.filter(
+    (entry) => typeof entry?.completedStepIndex === "number" && entry.completedStepIndex >= 0,
+  );
+  const latestChallenge =
+    completedChallenges.length > 0 ? completedChallenges[completedChallenges.length - 1] : null;
+  const turnUserVotes = Array.isArray(ledger.turnUserVotes) ? ledger.turnUserVotes : [];
+  const hasPostChallengeVote = Boolean(
+    latestChallenge &&
+      turnUserVotes.some(
+        (vote) =>
+          vote &&
+          vote.answered === true &&
+          vote.errored !== true &&
+          typeof vote.completedStepIndex === "number" &&
+          vote.completedStepIndex > latestChallenge.completedStepIndex,
+      ),
+  );
+  const preflight = {
+    used: Boolean(latestChallenge),
+    verdict: latestChallenge ? latestChallenge.verdict : null,
+    voted: hasPostChallengeVote,
+  };
+
+  if (sessionRole === "main" && ledger.turnCodeWrittenFiles.size > 0 && latestChallenge && !hasPostChallengeVote) {
+    details.preflightVerdict = latestChallenge.verdict;
+    if (latestChallenge.verdict === "RETHINK") {
+      blockedRules.push("R9_PREFLIGHT_UNVOTED");
+    } else {
+      warnedRules.push("R9_PREFLIGHT_UNVOTED");
+    }
+  }
+
   const risk =
     context.risk ??
     classifyRisk({
@@ -531,7 +571,6 @@ export function decideGate(input = {}, context = {}) {
       gitLedger,
       config: context.governanceConfig ?? null,
     });
-  const sessionRole = typeof ledger.sessionRole === "string" && ledger.sessionRole.length > 0 ? ledger.sessionRole : "main";
   const allTurnAudits = Array.isArray(ledger.turnSubagentAudits) ? ledger.turnSubagentAudits : [];
   const totalAuditRejects = allTurnAudits.filter((audit) => audit.verdict === "REJECT").length;
   const auditAnchorStep = (audit) =>
@@ -555,7 +594,15 @@ export function decideGate(input = {}, context = {}) {
   let auditPassed = false;
   let auditVerdict = latestPostWriteAudit?.verdict ?? null;
 
-  if (blockedRules.length > 0 && priorRejects >= 3 && effectiveUnverifiedScope.length >= 1 && !claimsAnyPass) {
+  const isOnlyPreflightUnvotedBlock =
+    blockedRules.length === 1 && blockedRules[0] === "R9_PREFLIGHT_UNVOTED";
+  const canDegradeOnDeadlock =
+    blockedRules.length > 0 &&
+    priorRejects >= 3 &&
+    effectiveUnverifiedScope.length >= 1 &&
+    (!claimsAnyPass || isOnlyPreflightUnvotedBlock);
+
+  if (canDegradeOnDeadlock) {
     verdict = "PASS_WITH_DEGRADATION";
     details.degradedFromBlockedRules = [...blockedRules];
     finalBlockedRules = [];
@@ -612,6 +659,7 @@ export function decideGate(input = {}, context = {}) {
     details,
     risk,
     auditVerdict,
+    preflight,
     receiptText,
     metrics: {
       hedgeHits: hedge.hedgeHits,

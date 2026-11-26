@@ -167,6 +167,10 @@ export function updateSessionPollutionState({
     mergedFailed >= failLimit ||
     mergedFileEdits >= churnLimit;
 
+  const prevLoggedPreflightKeys = Array.isArray(prev.loggedPreflightKeys)
+    ? prev.loggedPreflightKeys.filter((k) => typeof k === "string" && k.length > 0).slice(-50)
+    : [];
+
   const state = {
     conversationId,
     turnStartStepIndex:
@@ -178,6 +182,7 @@ export function updateSessionPollutionState({
     failedExecutionsInTurn: mergedFailed,
     maxSingleFileEdits: mergedFileEdits,
     pollutionAlert,
+    loggedPreflightKeys: prevLoggedPreflightKeys,
   };
 
   try {
@@ -185,6 +190,37 @@ export function updateSessionPollutionState({
   } catch {
   }
   return state;
+}
+
+export function markPreflightChallengeLogged({
+  conversationId,
+  dedupKey,
+  dataDir = resolvePluginDataDir(),
+} = {}) {
+  const filePath = resolveSessionStatePath(conversationId, dataDir);
+  if (!filePath || typeof dedupKey !== "string" || dedupKey.length === 0) {
+    return false;
+  }
+  const prev = readSessionState(conversationId, dataDir) ?? { conversationId };
+  const existing = Array.isArray(prev.loggedPreflightKeys)
+    ? prev.loggedPreflightKeys.filter((k) => typeof k === "string" && k.length > 0)
+    : [];
+  if (existing.includes(dedupKey)) {
+    return false;
+  }
+  const nextKeys = [...existing, dedupKey].slice(-50);
+  const nextState = {
+    ...prev,
+    conversationId,
+    updatedAt: new Date().toISOString(),
+    loggedPreflightKeys: nextKeys,
+  };
+  try {
+    atomicWriteJson(filePath, nextState);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function summarizeDiffStat(gitLedger) {

@@ -3,11 +3,56 @@
 import { appendAuditRecord, readGovernanceConfig } from "./governance/audit-log.mjs";
 import { DEFAULT_POLLUTION_THRESHOLDS } from "./governance/constants.mjs";
 import { detectSessionRoleFromHeaderSteps, readFactLedger } from "./governance/fact-ledger.mjs";
-import { updateSessionPollutionState } from "./governance/handoff-store.mjs";
+import { markPreflightChallengeLogged, updateSessionPollutionState } from "./governance/handoff-store.mjs";
 import { isDirectExecution, loadHookContext, readTranscriptSteps, runHookCli } from "./hook-io.mjs";
 import { decideHookAction } from "./transcript.mjs";
 
 export { readTranscriptSteps };
+
+function tryLogCompletedPreflightChallenges(conversationId, ledger) {
+  if (!ledger?.transcriptAvailable || ledger.sessionRole !== "main") {
+    return;
+  }
+  const challenges = Array.isArray(ledger.turnPreflightChallenges) ? ledger.turnPreflightChallenges : [];
+  const completed = challenges.filter(
+    (entry) => typeof entry?.completedStepIndex === "number" && entry.completedStepIndex >= 0,
+  );
+  if (completed.length === 0) {
+    return;
+  }
+  const turnUserVotes = Array.isArray(ledger.turnUserVotes) ? ledger.turnUserVotes : [];
+  const codeWritten = ledger.turnCodeWrittenFiles.size > 0;
+  const dedupConversationId = conversationId || "anonymous";
+
+  for (const challenge of completed) {
+    const dedupKey = `${dedupConversationId}:${ledger.turnStartStepIndex}:${challenge.completedStepIndex}`;
+    const shouldLog = conversationId
+      ? markPreflightChallengeLogged({ conversationId, dedupKey })
+      : true;
+    if (!shouldLog) {
+      continue;
+    }
+    const voted = turnUserVotes.some(
+      (vote) =>
+        vote &&
+        vote.answered === true &&
+        vote.errored !== true &&
+        typeof vote.completedStepIndex === "number" &&
+        vote.completedStepIndex > challenge.completedStepIndex,
+    );
+    appendAuditRecord({
+      ts: new Date().toISOString(),
+      event: "preflight_complete",
+      eventType: "preflight_complete",
+      conversationId,
+      turnStartStepIndex: ledger.turnStartStepIndex,
+      verdict: challenge.verdict,
+      voted,
+      codeWritten,
+      challengeStepIndex: challenge.completedStepIndex,
+    });
+  }
+}
 
 function tryLogPostInvocationTelemetry(context, decision) {
   try {
@@ -21,7 +66,7 @@ function tryLogPostInvocationTelemetry(context, decision) {
     const tokens = ledger?.latestTokens ?? { inputTokens: null, cacheReadTokens: null, outputTokens: null };
 
     let pollutionState = null;
-    if (sessionRole !== "auditor" && conversationId) {
+    if (sessionRole !== "auditor" && sessionRole !== "challenger" && conversationId) {
       const cfg = readGovernanceConfig();
       const thresholds = {
         ...DEFAULT_POLLUTION_THRESHOLDS,
@@ -35,6 +80,10 @@ function tryLogPostInvocationTelemetry(context, decision) {
         maxSingleFileEdits: ledger?.maxSingleFileEdits ?? 0,
         thresholds,
       });
+    }
+
+    if (sessionRole === "main" && ledger) {
+      tryLogCompletedPreflightChallenges(conversationId, ledger);
     }
 
     appendAuditRecord({

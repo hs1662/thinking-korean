@@ -5,13 +5,20 @@ export const HANDOFF_TOOL_NAME = "mcp_hstack_gate_manage_handoff";
 export const SUBAGENT_TOOL_NAME = "invoke_subagent";
 
 export const AUDITOR_AGENT_NAME = "hstack-auditor";
+export const CHALLENGER_AGENT_NAME = "hstack-challenger";
 export const WORKER_AGENT_NAME = "hstack-worker";
 export const AUDITOR_ROLE_LABEL = "독립 코드 감사관";
+export const CHALLENGER_ROLE_LABEL = "적대적 설계 검토관";
 export const WORKER_ROLE_LABEL = "팩트 기반 격리 작업자";
 export const AUDITOR_SESSION_MARKER = "[hstack:독립감사]";
+export const CHALLENGER_SESSION_MARKER = "[hstack:사전검토]";
 export const WORKER_SESSION_MARKER = "[hstack:격리작업]";
 export const AUDIT_PASS_TAG = "[감사 판정: 통과]";
 export const AUDIT_REJECT_TAG = "[감사 판정: 반려]";
+export const PREFLIGHT_PROCEED_TAG = "[사전검토 판정: 진행 가능]";
+export const PREFLIGHT_CONDITIONAL_TAG = "[사전검토 판정: 조건부 진행]";
+export const PREFLIGHT_RETHINK_TAG = "[사전검토 판정: 재설계 권고]";
+export const USER_VOTE_TOOL_NAMES = new Set(["ask_question"]);
 
 export const PASSING_VERDICTS = new Set([
   "PASS",
@@ -228,6 +235,10 @@ const NEUTRAL_RULE_MESSAGES = {
     "독립 코드 감사관이 결함을 지적해 반려 판정을 내렸습니다. 지적 사항을 수정하고 검증과 독립 감사를 다시 통과해야 합니다.",
   R8_AUDIT_ERROR: () =>
     "독립 코드 감사관 실행이 오류나 판정 누락으로 종료되었습니다. 독립 코드 감사관을 다시 호출해 최종 판정을 받아 주세요.",
+  R9_PREFLIGHT_UNVOTED: (verdict) =>
+    verdict === "RETHINK"
+      ? "적대적 사전 검토에서 재설계 권고가 나왔지만 사용자 표결을 거치지 않고 코드를 수정했습니다. 내장 질문 도구로 사용자 표결을 확보하거나 변경을 원복한 뒤 다시 진행해 주세요."
+      : "적대적 사전 검토 이후 사용자 표결 기록 없이 코드를 수정했습니다. 변경 근거와 사전 검토 쟁점을 최종 보고에 분명히 밝혀 주세요.",
 };
 
 const AUDIT_RULE_MESSAGES = {
@@ -251,6 +262,10 @@ const AUDIT_RULE_MESSAGES = {
     "독립 코드 감사관의 검토에서 반려 판정이 기록되었습니다. 지적된 결함을 시정하고 재검증 및 재감사를 완료하십시오.",
   R8_AUDIT_ERROR: () =>
     "독립 코드 감사관 응답에서 실행 오류 또는 판정 태그 누락이 확인되었습니다. 독립 코드 감사관을 재호출하여 정상 판정을 확보하십시오.",
+  R9_PREFLIGHT_UNVOTED: (verdict) =>
+    verdict === "RETHINK"
+      ? "사전 검토에서 재설계 권고 판정이 기록되었으나 사용자 표결 증빙 없이 코드 변경이 수행되었습니다. 사용자 표결을 확보하거나 변경 사항을 원복한 뒤 재요청하십시오."
+      : "사전 검토 완료 이후 사용자 표결 증빙 없이 코드 변경이 수행되었습니다. 최종 보고에 사전 검토 쟁점과 변경 사유를 명시하십시오.",
 };
 
 export const REGISTER_COPY = {
