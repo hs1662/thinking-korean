@@ -240,7 +240,7 @@ describe("MCP manage_handoff stdio roundtrip and pollution alert integration", (
     const client = createMcpClient({ PLUGIN_DATA: dataDir });
     try {
       const init = await client.request("initialize", { protocolVersion: "2024-11-05" });
-      assert.equal(init.result.serverInfo.version, "2.1.3");
+      assert.equal(init.result.serverInfo.version, "2.2.0");
       client.notify("notifications/initialized");
 
       const listRes = await client.request("tools/list");

@@ -227,13 +227,16 @@ describe("audit-report parser and aggregator", () => {
     for (const heading of [
       "[1] 전체 요약",
       "[2] 기간별 반려율 추이",
-      "[3] R1~R8 규칙 위반·경고 분포",
+      "[3] R1~R9 규칙 위반·경고 분포",
       "[4] Tier 1 독립 감사 현황",
       "[5] 컨텍스트 오염 경보 및 미검증 보고",
       "[6] 로컬 스캔 지연 통계",
+      "[7] 적대적 사전 검토(Preflight) 현황",
     ]) {
       assert.ok(table.includes(heading), `missing section heading: ${heading}`);
     }
+    assert.equal(summary.preflight.totalChallenges, 0);
+    assert.equal(summary.preflight.voteCompletionRate, 0);
   });
 
   it("supports --days, --since, --group-by week filtering and safe zero-denominator defaults", () => {
@@ -404,6 +407,105 @@ describe("audit-report parser and aggregator", () => {
     assert.equal(summary.scanLatencyMs.gitScanMs.count, 5);
     assert.equal(summary.scanLatencyMs.gitScanMs.p50, 25);
     assert.equal(summary.scanLatencyMs.gitScanMs.max, 40);
+  });
+
+  it("aggregates [7] preflight summary with turn-level deduplication, R9 counts, and Phase 1/2 backward compatibility", () => {
+    const parsed = parseAuditLines(
+      [
+        JSON.stringify({
+          ts: "2026-11-26T02:00:00.000Z",
+          eventType: "preflight_complete",
+          conversationId: "conv-a",
+          turnStartStepIndex: 0,
+          verdict: "RETHINK",
+          voted: false,
+          codeWritten: false,
+          challengeStepIndex: 3,
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T02:01:00.000Z",
+          eventType: "gate_verify",
+          conversationId: "conv-a",
+          turnStartStepIndex: 0,
+          attemptInTurn: 1,
+          sessionRole: "main",
+          verdict: "REJECT",
+          preflight: { used: true, verdict: "RETHINK", voted: false },
+          blockedRules: ["R9_PREFLIGHT_UNVOTED"],
+          warnedRules: [],
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T02:02:00.000Z",
+          eventType: "gate_verify",
+          conversationId: "conv-a",
+          turnStartStepIndex: 0,
+          attemptInTurn: 2,
+          sessionRole: "main",
+          verdict: "PASS",
+          preflight: { used: true, verdict: "RETHINK", voted: true },
+          blockedRules: [],
+          warnedRules: [],
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T02:05:00.000Z",
+          eventType: "preflight_complete",
+          conversationId: "conv-b",
+          turnStartStepIndex: 4,
+          verdict: "CONDITIONAL",
+          voted: false,
+          codeWritten: true,
+          challengeStepIndex: 6,
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T02:06:00.000Z",
+          eventType: "gate_verify",
+          conversationId: "conv-b",
+          turnStartStepIndex: 4,
+          attemptInTurn: 1,
+          sessionRole: "main",
+          verdict: "PASS_WITH_WARNING",
+          preflight: { used: true, verdict: "CONDITIONAL", voted: false },
+          blockedRules: [],
+          warnedRules: ["R9_PREFLIGHT_UNVOTED"],
+        }),
+        JSON.stringify({
+          ts: "2026-11-26T02:10:00.000Z",
+          eventType: "preflight_complete",
+          conversationId: "conv-c",
+          turnStartStepIndex: 0,
+          verdict: "PROCEED",
+          voted: true,
+          codeWritten: false,
+          challengeStepIndex: 2,
+        }),
+      ].join("\n"),
+    );
+
+    const summary = summarizeAuditRecords(parsed, { filePath: "/tmp/audit.jsonl", fileExists: true });
+    assert.equal(summary.preflight.totalChallenges, 3);
+    assert.deepEqual(summary.preflight.verdicts, {
+      PROCEED: 1,
+      CONDITIONAL: 1,
+      RETHINK: 1,
+      ERROR: 0,
+      MISSING_VERDICT: 0,
+    });
+    assert.equal(summary.preflight.votedCount, 2);
+    assert.equal(summary.preflight.voteCompletionRate, 66.7);
+    assert.equal(summary.preflight.r9BlockedCount, 1);
+    assert.equal(summary.preflight.r9WarnedCount, 1);
+
+    const r9Entry = summary.rules.items.find((item) => item.rule === "R9_PREFLIGHT_UNVOTED");
+    assert.ok(r9Entry);
+    assert.equal(r9Entry.blocked, 1);
+    assert.equal(r9Entry.warned, 1);
+    assert.equal(r9Entry.total, 2);
+
+    const table = formatAuditReportTable(summary);
+    assert.ok(table.includes("[3] R1~R9 규칙 위반·경고 분포"));
+    assert.ok(table.includes("[7] 적대적 사전 검토(Preflight) 현황"));
+    assert.ok(table.includes("총 사전 검토: 3건 | 표결 완료율: 66.7% (2/3)"));
+    assert.ok(table.includes("R9_PREFLIGHT_UNVOTED: 차단=1건, 경고=1건"));
   });
 });
 

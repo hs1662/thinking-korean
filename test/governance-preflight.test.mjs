@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import { describe, it } from "node:test";
 
 import { analyzeField, analyzeUiTexts } from "../scripts/analyzer.mjs";
+import { createMcpServerHandler } from "../scripts/mcp/server.mjs";
 import {
   AUDITOR_AGENT_NAME,
   CHALLENGER_AGENT_NAME,
@@ -770,5 +771,75 @@ describe("pre-tool-gate.mjs, stop.mjs, and post-invocation.mjs challenger integr
     samples.sort((a, b) => a - b);
     const medianMs = samples[2];
     assert.ok(medianMs <= 100, `expected 5MB readFactLedger median <= 100ms, got ${medianMs.toFixed(1)}ms`);
+  });
+
+  it("records preflight metadata in MCP verify_completion audit.jsonl and enforces challenger/skill file contracts", () => {
+    const dataDir = createTempDir("hstack-mcp-preflight-data-");
+    const trDir = createTempDir("hstack-mcp-preflight-tr-");
+    const trPath = join(trDir, "transcript_full.jsonl");
+    writeFileSync(
+      trPath,
+      toJsonl([
+        { step_index: 0, type: "USER_INPUT", content: "/hstack-preflight 검토 후 수정" },
+        {
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [{ name: SUBAGENT_TOOL_NAME, args: { TypeName: CHALLENGER_AGENT_NAME, Prompt: "반론" } }],
+        },
+        { step_index: 2, type: "GENERIC", status: "DONE", content: `근거\n${PREFLIGHT_RETHINK_TAG}` },
+        {
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          tool_calls: [
+            { name: "read_file", args: { Path: "/repo/src/app.mjs" } },
+            { name: "edit_file", args: { Path: "/repo/src/app.mjs" } },
+          ],
+        },
+        { step_index: 4, type: "GENERIC", status: "DONE", content: "ok" },
+        { step_index: 5, type: "GENERIC", status: "DONE", content: "ok" },
+        { step_index: 6, type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "node --test" } }] },
+        { step_index: 7, type: "GENERIC", status: "DONE", content: "# pass 1\n# fail 0" },
+      ]),
+      "utf8",
+    );
+
+    const handler = createMcpServerHandler({ dataDir, register: "neutral" });
+    const res = handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "verify_completion",
+        arguments: {
+          modified_files: ["src/app.mjs"],
+          inspected_files: ["src/app.mjs"],
+          verification_runs: [{ command: "node --test", outcome: "pass" }],
+          unverified_scope: [],
+          self_assessment: "수정과 테스트 통과를 확인했습니다.",
+          _session: { conversationId: "conv-mcp-pre", transcriptPath: trPath, cwd: "/repo" },
+        },
+      },
+    });
+    assert.equal(res.result.isError, false);
+    assert.ok(res.result.content[0].text.includes("재설계 권고"));
+
+    const records = readFileSync(join(dataDir, "audit.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(records.length, 1);
+    assert.deepEqual(records[0].preflight, { used: true, verdict: "RETHINK", voted: false });
+    assert.deepEqual(records[0].blockedRules, ["R9_PREFLIGHT_UNVOTED"]);
+
+    const challengerMd = readFileSync("agents/hstack-challenger.md", "utf8");
+    assert.equal(/^tools\s*:/m.test(challengerMd), false, "hstack-challenger.md must omit tools: frontmatter");
+    assert.ok(challengerMd.includes(PREFLIGHT_PROCEED_TAG));
+    assert.ok(challengerMd.includes(PREFLIGHT_CONDITIONAL_TAG));
+    assert.ok(challengerMd.includes(PREFLIGHT_RETHINK_TAG));
+
+    const skillMd = readFileSync("skills/hstack-preflight/SKILL.md", "utf8");
+    assert.ok(skillMd.includes("name: hstack-preflight"));
+    assert.ok(skillMd.includes("ask_question"));
+    assert.ok(skillMd.includes("비대화형"));
   });
 });

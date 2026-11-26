@@ -15,9 +15,10 @@ const VERDICT_ORDER = [
   "SKIPPED_NO_SESSION",
 ];
 
-const SESSION_ROLES = ["main", "auditor", "worker"];
+const SESSION_ROLES = ["main", "auditor", "worker", "challenger"];
 const SCHEMA_REGISTERS = ["neutral", "audit"];
 const RISK_REASON_KEYS = ["sensitive_path", "large_file_count", "large_diff_lines"];
+const PREFLIGHT_VERDICT_KEYS = ["PROCEED", "CONDITIONAL", "RETHINK", "ERROR", "MISSING_VERDICT"];
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -153,6 +154,7 @@ function normalizeEventType(record) {
         : "";
 
   if (raw === "gate_verify") return "gate_verify";
+  if (raw === "preflight_complete") return "preflight_complete";
   if (raw === "handoff_save") return "handoff_save";
   if (raw === "handoff_load") return "handoff_load";
   if (raw === "post_telemetry" || raw === "post_invocation") return "post_telemetry";
@@ -411,6 +413,7 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
   let maxTsMs = null;
   const eventCounts = {
     gate_verify: 0,
+    preflight_complete: 0,
     handoff_save: 0,
     handoff_load: 0,
     post_telemetry: 0,
@@ -438,6 +441,33 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
     MISSING_VERDICT: 0,
   };
   const riskReasonMap = new Map(RISK_REASON_KEYS.map((key) => [key, 0]));
+
+  const preflightTurnMap = new Map();
+  let syntheticPreflightSeq = 0;
+  const makePreflightTurnKey = (rec) => {
+    const cid = typeof rec.conversationId === "string" ? rec.conversationId.trim() : "";
+    const turnStart = isFiniteNumber(rec.turnStartStepIndex) ? rec.turnStartStepIndex : null;
+    if (cid.length > 0 && turnStart !== null) {
+      return `${cid}::${turnStart}`;
+    }
+    syntheticPreflightSeq += 1;
+    return `__anon_${syntheticPreflightSeq}`;
+  };
+  const recordPreflightTurn = (rec, { verdict, voted }) => {
+    const key = makePreflightTurnKey(rec);
+    const normVerdict = PREFLIGHT_VERDICT_KEYS.includes(verdict) ? verdict : "MISSING_VERDICT";
+    const existing = preflightTurnMap.get(key);
+    if (!existing) {
+      preflightTurnMap.set(key, { verdict: normVerdict, voted: Boolean(voted) });
+      return;
+    }
+    if (normVerdict !== "MISSING_VERDICT" || existing.verdict === "MISSING_VERDICT") {
+      existing.verdict = normVerdict;
+    }
+    if (voted === true) {
+      existing.voted = true;
+    }
+  };
 
   let pollutionCheckedCount = 0;
   let pollutionAlertCount = 0;
@@ -487,8 +517,23 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
       cacheReadTokenCount += 1;
     }
 
+    if (ev === "preflight_complete") {
+      recordPreflightTurn(rec, {
+        verdict: typeof rec.verdict === "string" ? rec.verdict : "MISSING_VERDICT",
+        voted: rec.voted === true,
+      });
+      continue;
+    }
+
     if (ev !== "gate_verify") {
       continue;
+    }
+
+    if (isPlainObject(rec.preflight) && rec.preflight.used === true) {
+      recordPreflightTurn(rec, {
+        verdict: typeof rec.preflight.verdict === "string" ? rec.preflight.verdict : "MISSING_VERDICT",
+        voted: rec.preflight.voted === true,
+      });
     }
 
     gateTotal += 1;
@@ -506,6 +551,9 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
 
     const role = typeof rec.sessionRole === "string" ? rec.sessionRole : "";
     if (SESSION_ROLES.includes(role)) {
+      if (!Object.hasOwn(sessionRoles, role)) {
+        sessionRoles[role] = 0;
+      }
       sessionRoles[role] += 1;
     } else {
       sessionRoles.unknown += 1;
@@ -620,6 +668,27 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
   const verdicts = mapToPlainCounts(verdictsMap);
   const riskReasonCounts = mapToPlainCounts(riskReasonMap);
 
+  const preflightVerdictCounts = {
+    PROCEED: 0,
+    CONDITIONAL: 0,
+    RETHINK: 0,
+    ERROR: 0,
+    MISSING_VERDICT: 0,
+  };
+  let preflightVotedCount = 0;
+  for (const item of preflightTurnMap.values()) {
+    if (Object.hasOwn(preflightVerdictCounts, item.verdict)) {
+      preflightVerdictCounts[item.verdict] += 1;
+    } else {
+      preflightVerdictCounts.MISSING_VERDICT += 1;
+    }
+    if (item.voted) {
+      preflightVotedCount += 1;
+    }
+  }
+  const preflightTotal = preflightTurnMap.size;
+  const r9RuleEntry = ruleMap.get("R9_PREFLIGHT_UNVOTED") ?? { blocked: 0, warned: 0, total: 0 };
+
   return {
     meta: {
       filePath,
@@ -679,11 +748,27 @@ export function summarizeAuditRecords(parsedInput, options = {}) {
       ledgerScanMs: computeLatencyStats(ledgerScanSamples),
       gitScanMs: computeLatencyStats(gitScanSamples),
     },
+    preflight: {
+      totalChallenges: preflightTotal,
+      verdicts: preflightVerdictCounts,
+      votedCount: preflightVotedCount,
+      voteCompletionRate: preflightTotal > 0 ? round1((preflightVotedCount / preflightTotal) * 100) : 0,
+      r9BlockedCount: r9RuleEntry.blocked,
+      r9WarnedCount: r9RuleEntry.warned,
+    },
   };
 }
 
 export function formatAuditReportTable(summary) {
   const { meta, overview, periodTrend, rules, tier1Audit, contextHealth, scanLatencyMs } = summary;
+  const preflight = summary.preflight ?? {
+    totalChallenges: 0,
+    verdicts: { PROCEED: 0, CONDITIONAL: 0, RETHINK: 0, ERROR: 0, MISSING_VERDICT: 0 },
+    votedCount: 0,
+    voteCompletionRate: 0,
+    r9BlockedCount: 0,
+    r9WarnedCount: 0,
+  };
   const rangeLabel =
     meta.dateRange.from && meta.dateRange.to
       ? `${meta.dateRange.from.slice(0, 19).replace("T", " ")}Z ~ ${meta.dateRange.to.slice(0, 19).replace("T", " ")}Z`
@@ -706,7 +791,7 @@ export function formatAuditReportTable(summary) {
     `- 판정 분포: ${VERDICT_ORDER.map((v) => `${v}=${overview.verdicts[v] ?? 0}`).join(", ")}`,
   );
   lines.push(
-    `- sessionRole 분포: main=${overview.sessionRoles.main}, auditor=${overview.sessionRoles.auditor}, worker=${overview.sessionRoles.worker}${overview.sessionRoles.unknown > 0 ? `, 미기재=${overview.sessionRoles.unknown}` : ""}`,
+    `- sessionRole 분포: main=${overview.sessionRoles.main}, auditor=${overview.sessionRoles.auditor}, worker=${overview.sessionRoles.worker}${overview.sessionRoles.challenger > 0 ? `, challenger=${overview.sessionRoles.challenger}` : ""}${overview.sessionRoles.unknown > 0 ? `, 미기재=${overview.sessionRoles.unknown}` : ""}`,
   );
   lines.push(
     `- schemaRegister 분포: neutral=${overview.schemaRegisters.neutral}, audit=${overview.schemaRegisters.audit}${overview.schemaRegisters.unknown > 0 ? `, 미기재=${overview.schemaRegisters.unknown}` : ""}`,
@@ -730,7 +815,7 @@ export function formatAuditReportTable(summary) {
   }
   lines.push("");
 
-  lines.push("[3] R1~R8 규칙 위반·경고 분포");
+  lines.push("[3] R1~R9 규칙 위반·경고 분포");
   if (rules.items.length === 0) {
     lines.push("- 기록된 규칙 위반·경고가 없습니다.");
   } else {
@@ -779,6 +864,18 @@ export function formatAuditReportTable(summary) {
       `${label.padEnd(13)} | ${String(stats.count).padStart(4)} | ${formatMs(stats.avg).padStart(8)} | ${formatMs(stats.p50).padStart(9)} | ${formatMs(stats.p95).padStart(8)} | ${formatMs(stats.max).padStart(8)}`,
     );
   }
+  lines.push("");
+
+  lines.push("[7] 적대적 사전 검토(Preflight) 현황");
+  lines.push(
+    `- 총 사전 검토: ${preflight.totalChallenges}건 | 표결 완료율: ${preflight.totalChallenges > 0 ? `${preflight.voteCompletionRate.toFixed(1)}% (${preflight.votedCount}/${preflight.totalChallenges})` : "-"}`,
+  );
+  lines.push(
+    `- 판정 분포: PROCEED=${preflight.verdicts.PROCEED}, CONDITIONAL=${preflight.verdicts.CONDITIONAL}, RETHINK=${preflight.verdicts.RETHINK}, ERROR=${preflight.verdicts.ERROR}, MISSING_VERDICT=${preflight.verdicts.MISSING_VERDICT}`,
+  );
+  lines.push(
+    `- R9_PREFLIGHT_UNVOTED: 차단=${preflight.r9BlockedCount}건, 경고=${preflight.r9WarnedCount}건`,
+  );
 
   return lines.join("\n");
 }
