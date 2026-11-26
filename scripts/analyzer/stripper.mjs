@@ -7,7 +7,7 @@ const CLI_UI_HINT_LINE_RE =
 const SUMMARIZER_BOILERPLATE_LINE_RE = /^[ \t]*I['’]m thinking through how to approach this\.[ \t]*$/gm;
 const ERROR_QUOTE_RE =
   /^(?:[A-Z][A-Za-z0-9_]*Error:|Error:|Exception:|Traceback\b|FAIL(?:ED)?\b|FATAL\b|WARN(?:ING)?\b|ERR!|ENOENT\b|EACCES\b|EPERM\b|ECONNREFUSED\b|ETIMEDOUT\b|EISDIR\b|ENOTDIR\b|SyntaxError\b|TypeError\b|ReferenceError\b|RangeError\b|AssertionError\b|Unexpected\s+(?:end|token|identifier|EOF|character)|Cannot\s+(?:read|find|resolve|open|access)\b|(?:Failed\s+to|Could\s+not|Unable\s+to)\s+(?:open|read|write|load|parse|resolve|find|locate|connect|fetch|download|upload|compile|build|start|spawn|exec(?:ute)?|run|bind|listen|create|delete|remove|rename|stat|access|import|require|install|authenticate|verify|validate|initialize|allocate|lock|unlock|mount|unlink|mkdir|chmod|chown|decode|encode|serialize|deserialize|send|receive|request|sync|checkout|push|pull|clone|merge)\b|Permission\s+denied\b|No\s+such\s+file\b|at\s+\S+\s*\([^)\n]+\))/;
-const URL_RE = /\b(?:https?|ftp|file):\/\/[^\s<>)"'`\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+/gi;
+const URL_RE = /\b(?:https?|ftp|file|conversation):\/\/[^\s<>)"'`\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+/gi;
 const XML_TAG_RE =
   /(?<![A-Za-z0-9_])<\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s+[A-Za-z_:][A-Za-z0-9:._-]*\s*=\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s"'=<>`]+))*\s*\/?>/g;
 const WINDOWS_PATH_RE = /\b[A-Za-z]:\\[^\s"'`<>()[\]{},;*\u1100-\u11FF\u3131-\u318E\uAC00-\uD7A3]+/g;
