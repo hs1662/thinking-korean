@@ -294,7 +294,6 @@ describe("MCP manage_handoff stdio roundtrip and pollution alert integration", (
       assert.ok(loadText.includes("기존 모듈 리팩터링"));
       assert.ok(loadText.includes("전역 상태 캐시 방식은 격리 테스트와 충돌"));
 
-      // Trigger pollution alert via session state and verify verify_completion appends warning line
       updateSessionPollutionState({
         conversationId: "conv-polluted",
         inputTokens: 135_000,

@@ -534,8 +534,10 @@ export function decideGate(input = {}, context = {}) {
   const sessionRole = typeof ledger.sessionRole === "string" && ledger.sessionRole.length > 0 ? ledger.sessionRole : "main";
   const allTurnAudits = Array.isArray(ledger.turnSubagentAudits) ? ledger.turnSubagentAudits : [];
   const totalAuditRejects = allTurnAudits.filter((audit) => audit.verdict === "REJECT").length;
+  const auditAnchorStep = (audit) =>
+    typeof audit.launchedStepIndex === "number" ? audit.launchedStepIndex : audit.stepIndex;
   const postWriteAudits = hasCodeWrite
-    ? allTurnAudits.filter((audit) => audit.stepIndex > ledger.lastCodeWriteStepIndex)
+    ? allTurnAudits.filter((audit) => auditAnchorStep(audit) > ledger.lastCodeWriteStepIndex)
     : allTurnAudits;
   const latestPostWriteAudit = postWriteAudits.length > 0 ? postWriteAudits[postWriteAudits.length - 1] : null;
   let consecutiveTrailingAuditErrors = 0;
@@ -564,17 +566,19 @@ export function decideGate(input = {}, context = {}) {
       hasCodeWrite && auditEscalation === "auto" && risk.tier === "TIER_1" && sessionRole === "main";
 
     if (needsIndependentAudit) {
-      if (latestPostWriteAudit && latestPostWriteAudit.verdict === "PASS") {
+      if (!latestPostWriteAudit) {
+        verdict = "ESCALATE_AUDIT_REQUIRED";
+      } else if (latestPostWriteAudit.verdict === "PASS") {
         auditPassed = true;
         verdict = warnedRules.length > 0 ? "PASS_WITH_WARNING" : "PASS";
-      } else if (totalAuditRejects >= 2 && effectiveUnverifiedScope.length >= 1) {
-        verdict = "PASS_WITH_AUDIT_DEGRADATION";
-        details.auditDegradationReason = "reject";
-      } else if (!latestPostWriteAudit) {
-        verdict = "ESCALATE_AUDIT_REQUIRED";
       } else if (latestPostWriteAudit.verdict === "REJECT") {
-        finalBlockedRules = ["R8_AUDIT_REJECTED"];
-        verdict = "REJECT";
+        if (totalAuditRejects >= 2 && effectiveUnverifiedScope.length >= 1) {
+          verdict = "PASS_WITH_AUDIT_DEGRADATION";
+          details.auditDegradationReason = "reject";
+        } else {
+          finalBlockedRules = ["R8_AUDIT_REJECTED"];
+          verdict = "REJECT";
+        }
       } else if (consecutiveTrailingAuditErrors >= 2 && effectiveUnverifiedScope.length >= 1) {
         verdict = "PASS_WITH_AUDIT_DEGRADATION";
         details.auditDegradationReason = "error";

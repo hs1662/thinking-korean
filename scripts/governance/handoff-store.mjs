@@ -23,9 +23,11 @@ const MAX_LIST_SNAPSHOTS = 10;
 const MAX_RECENT_VERIFICATIONS = 5;
 const SAFE_SNAPSHOT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const SAFE_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const URL_SPAN_RE = /\b[a-z][a-z0-9+.-]*:\/\/\S+/gi;
 const FILE_PATH_TOKEN_RE = /(?:^|[\s`'"(\[])([A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+\.[A-Za-z0-9]{1,10})(?=$|[\s`'")\],:;])/g;
 const PASS_CLAIM_RE = /(?:통과|성공|모두\s*통과|pass(?:ed)?)/i;
 const TEST_CONTEXT_RE = /(?:테스트|검증|빌드|린트|test|vitest|jest|pytest|cargo\s+test|go\s+test)/i;
+const MAX_HASH_FILE_BYTES = 256 * 1024;
 
 function safeRealpath(rawPath) {
   if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
@@ -47,8 +49,44 @@ function atomicWriteJson(targetPath, data) {
   const dir = resolve(targetPath, "..");
   mkdirSync(dir, { recursive: true });
   const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-  renameSync(tmpPath, targetPath);
+  try {
+    writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    renameSync(tmpPath, targetPath);
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+    }
+    throw err;
+  }
+}
+
+function computeDirtyFingerprint(dirtyFiles, baseDir) {
+  if (!Array.isArray(dirtyFiles) || dirtyFiles.length === 0 || !baseDir) {
+    return "";
+  }
+  const hasher = createHash("sha256");
+  for (const relPath of [...dirtyFiles].sort()) {
+    hasher.update(relPath, "utf8");
+    hasher.update("\0");
+    const absPath = join(baseDir, relPath);
+    try {
+      const st = statSync(absPath);
+      if (st.isFile()) {
+        if (st.size <= MAX_HASH_FILE_BYTES) {
+          hasher.update(readFileSync(absPath));
+        } else {
+          hasher.update(`size:${st.size}:mtime:${st.mtimeMs}`);
+        }
+      } else {
+        hasher.update("nonfile");
+      }
+    } catch {
+      hasher.update("missing");
+    }
+    hasher.update("\n");
+  }
+  return hasher.digest("hex").slice(0, 16);
 }
 
 function sanitizeSessionFileId(conversationId) {
@@ -88,6 +126,7 @@ export function readSessionState(conversationId, dataDir = resolvePluginDataDir(
 
 export function updateSessionPollutionState({
   conversationId,
+  turnStartStepIndex = null,
   inputTokens = null,
   failedExecutionsInTurn = 0,
   maxSingleFileEdits = 0,
@@ -100,18 +139,24 @@ export function updateSessionPollutionState({
   }
 
   const prev = readSessionState(conversationId, dataDir) ?? {};
+  const isNewTurn =
+    typeof turnStartStepIndex === "number" &&
+    Number.isFinite(turnStartStepIndex) &&
+    typeof prev.turnStartStepIndex === "number" &&
+    prev.turnStartStepIndex !== turnStartStepIndex;
+
   const mergedInputTokens =
     typeof inputTokens === "number" && Number.isFinite(inputTokens)
       ? Math.max(inputTokens, Number.isFinite(prev.inputTokens) ? prev.inputTokens : 0)
       : (Number.isFinite(prev.inputTokens) ? prev.inputTokens : null);
-  const mergedFailed = Math.max(
-    Number.isFinite(failedExecutionsInTurn) ? failedExecutionsInTurn : 0,
-    Number.isFinite(prev.failedExecutionsInTurn) ? prev.failedExecutionsInTurn : 0,
-  );
-  const mergedFileEdits = Math.max(
-    Number.isFinite(maxSingleFileEdits) ? maxSingleFileEdits : 0,
-    Number.isFinite(prev.maxSingleFileEdits) ? prev.maxSingleFileEdits : 0,
-  );
+  const nextFailed = Number.isFinite(failedExecutionsInTurn) ? failedExecutionsInTurn : 0;
+  const nextEdits = Number.isFinite(maxSingleFileEdits) ? maxSingleFileEdits : 0;
+  const mergedFailed = isNewTurn
+    ? nextFailed
+    : Math.max(nextFailed, Number.isFinite(prev.failedExecutionsInTurn) ? prev.failedExecutionsInTurn : 0);
+  const mergedFileEdits = isNewTurn
+    ? nextEdits
+    : Math.max(nextEdits, Number.isFinite(prev.maxSingleFileEdits) ? prev.maxSingleFileEdits : 0);
 
   const tokenLimit = thresholds?.inputTokensWarning ?? DEFAULT_POLLUTION_THRESHOLDS.inputTokensWarning;
   const failLimit = thresholds?.failedExecutionsInTurn ?? DEFAULT_POLLUTION_THRESHOLDS.failedExecutionsInTurn;
@@ -124,6 +169,10 @@ export function updateSessionPollutionState({
 
   const state = {
     conversationId,
+    turnStartStepIndex:
+      typeof turnStartStepIndex === "number" && Number.isFinite(turnStartStepIndex)
+        ? turnStartStepIndex
+        : (typeof prev.turnStartStepIndex === "number" ? prev.turnStartStepIndex : 0),
     updatedAt: new Date().toISOString(),
     inputTokens: mergedInputTokens,
     failedExecutionsInTurn: mergedFailed,
@@ -176,7 +225,8 @@ function detectEpistemicWarnings(verifiedFacts, ledger, cwd, gitRoot) {
     if (typeof fact !== "string" || fact.trim().length === 0) {
       continue;
     }
-    const matches = fact.matchAll(FILE_PATH_TOKEN_RE);
+    const withoutUrls = fact.replace(URL_SPAN_RE, " ");
+    const matches = withoutUrls.matchAll(FILE_PATH_TOKEN_RE);
     for (const match of matches) {
       const candidate = normalizeWorkspacePath(match[1], cwd, gitRoot);
       if (candidate && !readFiles.has(candidate)) {
@@ -264,14 +314,17 @@ export function saveHandoffSnapshot({
     ? detectEpistemicWarnings(verifiedFacts, ledger, cwd, gitRoot)
     : [];
 
-  let maxSingleFileEdits = 0;
-  if (ledger?.fileEditCounts instanceof Map) {
+  let maxSingleFileEdits = Number.isFinite(ledger?.maxSingleFileEdits) ? ledger.maxSingleFileEdits : 0;
+  if (maxSingleFileEdits === 0 && ledger?.fileEditCounts instanceof Map) {
     for (const count of ledger.fileEditCounts.values()) {
       if (count > maxSingleFileEdits) {
         maxSingleFileEdits = count;
       }
     }
   }
+
+  const dirtyFilesSorted = Array.from(gitLedger?.gitDirtyFiles ?? []).sort();
+  const dirtyFingerprint = computeDirtyFingerprint(dirtyFilesSorted, gitRoot || cwd);
 
   const snapshot = {
     schemaVersion: 1,
@@ -288,7 +341,8 @@ export function saveHandoffSnapshot({
     machineEvidence: {
       gitBranch: gitLedger?.gitBranch ?? "",
       gitHead: gitLedger?.gitHead ?? "",
-      dirtyFiles: Array.from(gitLedger?.gitDirtyFiles ?? []).sort(),
+      dirtyFiles: dirtyFilesSorted,
+      dirtyFingerprint,
       diffStatSummary: summarizeDiffStat(gitLedger),
       sessionReadFiles: Array.from(ledger?.sessionReadFiles ?? []).sort().slice(0, 40),
       turnWrittenFiles: Array.from(ledger?.turnWrittenFiles ?? []).sort(),
@@ -433,11 +487,19 @@ export function loadHandoffSnapshot({
   const savedDirty = Array.isArray(snapshot?.machineEvidence?.dirtyFiles)
     ? [...snapshot.machineEvidence.dirtyFiles].sort()
     : [];
+  const savedFingerprint = typeof snapshot?.machineEvidence?.dirtyFingerprint === "string"
+    ? snapshot.machineEvidence.dirtyFingerprint
+    : "";
   const currentHead = gitLedger?.gitHead ?? "";
   const currentDirty = Array.from(gitLedger?.gitDirtyFiles ?? []).sort();
+  const currentFingerprint =
+    savedFingerprint.length > 0 ? computeDirtyFingerprint(currentDirty, gitRoot || cwd) : "";
 
   const treeChanged = Boolean(
-    gitLedger?.gitAvailable && (savedHead !== currentHead || !sameStringList(savedDirty, currentDirty)),
+    gitLedger?.gitAvailable &&
+      (savedHead !== currentHead ||
+        !sameStringList(savedDirty, currentDirty) ||
+        (savedFingerprint.length > 0 && savedFingerprint !== currentFingerprint)),
   );
 
   return {

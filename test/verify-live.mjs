@@ -137,7 +137,6 @@ export function setupAuthTokenWorkspace(workspaceDir) {
   if (typeof token.expiresAt !== "number" || !Number.isFinite(token.expiresAt)) {
     return false;
   }
-  // Bug: uses > instead of <= so expired tokens pass when nowMs === expiresAt is inverted
   return nowMs > token.expiresAt;
 }
 `,
@@ -178,7 +177,6 @@ export function setupAuthSessionWorkspace(workspaceDir) {
   }
   const [secret, expRaw] = parts;
   const expMs = Number(expRaw);
-  // Bug: rejects valid tokens too because secret length check is inverted
   return secret.length === 0 && Number.isFinite(expMs) && nowMs < expMs;
 }
 `,
@@ -1239,13 +1237,22 @@ export function summarizeGovernance({
           const types = extractSubagentTypeNames(call);
           if (types.some((t) => t === AUDITOR_AGENT_NAME || t === `hstack:${AUDITOR_AGENT_NAME}`)) {
             auditorCalls += 1;
-            const roleText =
-              typeof call?.args?.Role === "string"
-                ? call.args.Role
-                : typeof call?.args?.role === "string"
-                  ? call.args.role
-                  : "";
-            if (roleText === AUDITOR_ROLE_LABEL || /[가-힣]/.test(roleText)) {
+            const roleCandidates = [];
+            if (typeof call?.args?.Role === "string") roleCandidates.push(call.args.Role);
+            if (typeof call?.args?.role === "string") roleCandidates.push(call.args.role);
+            const subagentsArr = Array.isArray(call?.args?.Subagents)
+              ? call.args.Subagents
+              : Array.isArray(call?.args?.subagents)
+                ? call.args.subagents
+                : [];
+            for (const sub of subagentsArr) {
+              const t = sub?.TypeName ?? sub?.typeName ?? sub?.type_name;
+              if (t === AUDITOR_AGENT_NAME || t === `hstack:${AUDITOR_AGENT_NAME}`) {
+                if (typeof sub?.Role === "string") roleCandidates.push(sub.Role);
+                if (typeof sub?.role === "string") roleCandidates.push(sub.role);
+              }
+            }
+            if (roleCandidates.some((roleText) => roleText === AUDITOR_ROLE_LABEL || /[가-힣]/.test(roleText))) {
               auditorKoreanRoleCalls += 1;
             }
           }

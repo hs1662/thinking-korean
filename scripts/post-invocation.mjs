@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { appendAuditRecord, readGovernanceConfig } from "./governance/audit-log.mjs";
-import { AUDITOR_SESSION_MARKER, DEFAULT_POLLUTION_THRESHOLDS } from "./governance/constants.mjs";
-import { readFactLedger, readLatestTranscriptTokens } from "./governance/fact-ledger.mjs";
+import { DEFAULT_POLLUTION_THRESHOLDS } from "./governance/constants.mjs";
+import { detectSessionRoleFromUserInput, readFactLedger } from "./governance/fact-ledger.mjs";
 import { updateSessionPollutionState } from "./governance/handoff-store.mjs";
 import { isDirectExecution, loadHookContext, readTranscriptSteps, runHookCli } from "./hook-io.mjs";
 import { decideHookAction } from "./transcript.mjs";
@@ -12,51 +12,10 @@ export { readTranscriptSteps };
 function isAuditorSessionSteps(steps) {
   for (const step of steps) {
     if (step?.type === "USER_INPUT") {
-      return typeof step.content === "string" && step.content.includes(AUDITOR_SESSION_MARKER);
+      return detectSessionRoleFromUserInput(typeof step.content === "string" ? step.content : "") === "auditor";
     }
   }
   return false;
-}
-
-function tryUpdateSessionPollution(context, tokens) {
-  try {
-    const { payload, transcriptPath, steps } = context;
-    if (isAuditorSessionSteps(steps)) {
-      return null;
-    }
-    const rawConversationId = payload.conversationId ?? payload.conversation_id;
-    const conversationId = typeof rawConversationId === "string" ? rawConversationId.trim() : "";
-    if (!conversationId) {
-      return null;
-    }
-    const cwd = typeof payload.cwd === "string" ? payload.cwd.trim() : "";
-    const ledger = transcriptPath ? readFactLedger(transcriptPath, cwd, "") : null;
-    if (ledger?.sessionRole === "auditor") {
-      return null;
-    }
-    let maxSingleFileEdits = 0;
-    if (ledger?.fileEditCounts instanceof Map) {
-      for (const count of ledger.fileEditCounts.values()) {
-        if (count > maxSingleFileEdits) {
-          maxSingleFileEdits = count;
-        }
-      }
-    }
-    const cfg = readGovernanceConfig();
-    const thresholds = {
-      ...DEFAULT_POLLUTION_THRESHOLDS,
-      ...(cfg?.pollutionThresholds && typeof cfg.pollutionThresholds === "object" ? cfg.pollutionThresholds : {}),
-    };
-    return updateSessionPollutionState({
-      conversationId,
-      inputTokens: tokens.inputTokens ?? ledger?.latestTokens?.inputTokens ?? null,
-      failedExecutionsInTurn: ledger?.turnFailedExecutionCount ?? 0,
-      maxSingleFileEdits,
-      thresholds,
-    });
-  } catch {
-    return null;
-  }
 }
 
 function tryLogPostInvocationTelemetry(context, decision) {
@@ -65,10 +24,28 @@ function tryLogPostInvocationTelemetry(context, decision) {
     const rawConversationId = payload.conversationId ?? payload.conversation_id;
     const conversationId = typeof rawConversationId === "string" ? rawConversationId.trim() : "";
     const latestStep = steps[steps.length - 1];
-    const tokens = transcriptPath
-      ? readLatestTranscriptTokens(transcriptPath)
-      : { inputTokens: null, cacheReadTokens: null, outputTokens: null };
-    const pollutionState = tryUpdateSessionPollution(context, tokens);
+    const cwd = typeof payload.cwd === "string" ? payload.cwd.trim() : "";
+    const isAuditor = isAuditorSessionSteps(steps);
+    const ledger = transcriptPath ? readFactLedger(transcriptPath, cwd, "") : null;
+    const tokens = ledger?.latestTokens ?? { inputTokens: null, cacheReadTokens: null, outputTokens: null };
+
+    let pollutionState = null;
+    if (!isAuditor && conversationId && ledger?.sessionRole !== "auditor") {
+      const cfg = readGovernanceConfig();
+      const thresholds = {
+        ...DEFAULT_POLLUTION_THRESHOLDS,
+        ...(cfg?.pollutionThresholds && typeof cfg.pollutionThresholds === "object" ? cfg.pollutionThresholds : {}),
+      };
+      pollutionState = updateSessionPollutionState({
+        conversationId,
+        turnStartStepIndex: ledger?.turnStartStepIndex ?? 0,
+        inputTokens: tokens.inputTokens,
+        failedExecutionsInTurn: ledger?.turnFailedExecutionCount ?? 0,
+        maxSingleFileEdits: ledger?.maxSingleFileEdits ?? 0,
+        thresholds,
+      });
+    }
+
     appendAuditRecord({
       ts: new Date().toISOString(),
       event: "post_invocation",

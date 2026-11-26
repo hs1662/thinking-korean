@@ -391,7 +391,21 @@ export function createMcpServerHandler(options = {}) {
       };
     }
 
-    const effectiveCwd = cwd || process.cwd();
+    if (!cwd) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: buildHandoffErrorText([
+              "세션 작업 경로 정보가 전달되지 않아 핸드오프를 처리할 수 없습니다. 전처리 훅 설정을 확인해 주세요.",
+            ]),
+          },
+        ],
+        isError: false,
+      };
+    }
+
+    const effectiveCwd = cwd;
     const gitLedger = readGitLedger(effectiveCwd);
 
     if (publicArgs.action === "save") {

@@ -32,8 +32,11 @@ const GIT_TIMEOUT_MS = 1500;
 const MAX_UNWRAP_DEPTH = 2;
 const MAX_UNTRACKED_COUNT_BYTES = 512 * 1024;
 const SUBAGENT_CONVERSATION_ID_RE = /["']?(?:conversationId|conversation_id|sender)["']?\s*[:=]\s*["']?([0-9a-f-]{8,64})/i;
+const SUBAGENT_CONVERSATION_ID_GLOBAL_RE = /["']?(?:conversationId|conversation_id|sender)["']?\s*[:=]\s*["']?([0-9a-f-]{8,64})/gi;
 const SUBAGENT_SENDER_MSG_RE = /sender=([0-9a-f-]{8,64})\b/i;
 const SYSTEM_WRAPPER_LINE_RE = /^<\/?(?:SYSTEM_MESSAGE|USER_REQUEST|ADDITIONAL_METADATA)>$/i;
+const AUDITOR_MARKER_LINE_RE = /^\[hstack:독립감사\]$/;
+const WORKER_MARKER_LINE_RE = /^\[hstack:격리작업\]$/;
 
 const SHELL_WRAPPERS = new Set(["sudo", "time", "env", "command", "nohup"]);
 const WRAPPER_FLAGS_WITH_ARG = {
@@ -669,8 +672,8 @@ export function parseAuditVerdictFromText(fullContent, { status = "", error = ""
     return "MISSING_VERDICT";
   }
 
-  const stripEdgeDecoration = (line) => line.replace(/^[*_`\s]+|[*_`\s]+$/g, "");
-  const lastLine = stripEdgeDecoration(lines[lines.length - 1]);
+  const stripEmphasisOnly = (line) => line.replace(/^[*_\s]+|[*_\s]+$/g, "");
+  const lastLine = stripEmphasisOnly(lines[lines.length - 1]);
   if (lastLine === AUDIT_PASS_TAG) {
     return "PASS";
   }
@@ -678,26 +681,20 @@ export function parseAuditVerdictFromText(fullContent, { status = "", error = ""
     return "REJECT";
   }
 
-  const scanStart = Math.max(0, lines.length - 4);
-  for (let i = lines.length - 1; i >= scanStart; i -= 1) {
-    const candidate = stripEdgeDecoration(lines[i]);
-    if (candidate === AUDIT_PASS_TAG) {
-      return "PASS";
-    }
-    if (candidate === AUDIT_REJECT_TAG) {
-      return "REJECT";
-    }
-  }
-
   return "MISSING_VERDICT";
 }
 
-function extractSubagentConversationId(text) {
+function extractSubagentConversationIds(text) {
   if (typeof text !== "string" || text.length === 0) {
-    return "";
+    return [];
   }
-  const match = text.match(SUBAGENT_CONVERSATION_ID_RE);
-  return match ? match[1] : "";
+  const ids = [];
+  for (const match of text.matchAll(SUBAGENT_CONVERSATION_ID_GLOBAL_RE)) {
+    if (match[1]) {
+      ids.push(match[1]);
+    }
+  }
+  return ids;
 }
 
 function isAsyncSubagentLaunchAck(text) {
@@ -711,15 +708,25 @@ function isAsyncSubagentLaunchAck(text) {
   );
 }
 
-function detectSessionRoleFromUserInput(content) {
+export function detectSessionRoleFromUserInput(content) {
   if (typeof content !== "string" || content.length === 0) {
     return "main";
   }
-  if (content.includes(AUDITOR_SESSION_MARKER)) {
-    return "auditor";
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !SYSTEM_WRAPPER_LINE_RE.test(line));
+  if (lines.length === 0) {
+    return "main";
   }
-  if (content.includes(WORKER_SESSION_MARKER)) {
-    return "worker";
+  const tailStart = Math.max(0, lines.length - 6);
+  for (let i = tailStart; i < lines.length; i += 1) {
+    if (AUDITOR_MARKER_LINE_RE.test(lines[i])) {
+      return "auditor";
+    }
+    if (WORKER_MARKER_LINE_RE.test(lines[i])) {
+      return "worker";
+    }
   }
   return "main";
 }
@@ -833,9 +840,11 @@ function createEmptyLedger(transcriptAvailable = false) {
     turnExecutions: [],
     turnFailedExecutionCount: 0,
     fileEditCounts: new Map(),
+    maxSingleFileEdits: 0,
     turnGateAttempts: [],
     turnSubagentAudits: [],
     pendingAsyncAuditorCount: 0,
+    pendingAsyncAuditsAfterLastWrite: 0,
     latestTokens: { inputTokens: null, cacheReadTokens: null, outputTokens: null },
     gateBlockedThisTurn: false,
   };
@@ -856,9 +865,11 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
     ledger.turnExecutions = [];
     ledger.turnFailedExecutionCount = 0;
     ledger.fileEditCounts = new Map();
+    ledger.maxSingleFileEdits = 0;
     ledger.turnGateAttempts = [];
     ledger.turnSubagentAudits = [];
     ledger.pendingAsyncAuditorCount = 0;
+    ledger.pendingAsyncAuditsAfterLastWrite = 0;
     ledger.gateBlockedThisTurn = false;
     pendingCalls = [];
     asyncAuditsByConversationId.clear();
@@ -914,10 +925,14 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
           const senderId = senderMatch ? senderMatch[1] : "";
           const tracked = senderId ? asyncAuditsByConversationId.get(senderId) : null;
           if (tracked) {
-            tracked.stepIndex = Math.max(tracked.stepIndex, stepIndex);
+            tracked.completedStepIndex = Math.max(tracked.completedStepIndex ?? tracked.launchedStepIndex, stepIndex);
+            tracked.stepIndex = tracked.completedStepIndex;
             tracked.tail = extractTail(msgContent, AUDIT_TAIL_MAX_CHARS);
-            tracked.verdict = parseAuditVerdictFromText(msgContent);
-            asyncAuditsByConversationId.delete(senderId);
+            const parsedVerdict = parseAuditVerdictFromText(msgContent);
+            tracked.verdict = parsedVerdict;
+            if (parsedVerdict === "PASS" || parsedVerdict === "REJECT" || parsedVerdict === "ERROR") {
+              asyncAuditsByConversationId.delete(senderId);
+            }
           }
         }
         return true;
@@ -938,7 +953,11 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
           }
           for (const p of writePaths) {
             ledger.turnWrittenFiles.add(p);
-            ledger.fileEditCounts.set(p, (ledger.fileEditCounts.get(p) ?? 0) + 1);
+            const nextCount = (ledger.fileEditCounts.get(p) ?? 0) + 1;
+            ledger.fileEditCounts.set(p, nextCount);
+            if (nextCount > ledger.maxSingleFileEdits) {
+              ledger.maxSingleFileEdits = nextCount;
+            }
             ledger.lastWriteStepIndex = stepIndex;
             if (!isExemptDocOrAssetPath(p)) {
               ledger.turnCodeWrittenFiles.add(p);
@@ -985,16 +1004,29 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
             pendingCalls.push({ kind: "gate", entry });
           } else if (name === SUBAGENT_TOOL_NAME) {
             const typeNames = extractSubagentTypeNames(call);
-            if (typeNames.some(isAuditorTypeName)) {
-              const entry = {
-                stepIndex,
-                typeName: AUDITOR_AGENT_NAME,
-                verdict: "MISSING_VERDICT",
-                conversationId: "",
-                tail: "",
-              };
-              ledger.turnSubagentAudits.push(entry);
-              pendingCalls.push({ kind: "audit_subagent", entry });
+            const auditorIndices = [];
+            for (let idx = 0; idx < typeNames.length; idx += 1) {
+              if (isAuditorTypeName(typeNames[idx])) {
+                auditorIndices.push(idx);
+              }
+            }
+            if (auditorIndices.length > 0) {
+              const entries = auditorIndices.map((slotIndex) => {
+                const entry = {
+                  stepIndex,
+                  launchedStepIndex: stepIndex,
+                  completedStepIndex: stepIndex,
+                  slotIndex,
+                  totalSlots: typeNames.length,
+                  typeName: AUDITOR_AGENT_NAME,
+                  verdict: "MISSING_VERDICT",
+                  conversationId: "",
+                  tail: "",
+                };
+                ledger.turnSubagentAudits.push(entry);
+                return entry;
+              });
+              pendingCalls.push({ kind: "audit_subagent", entries });
             } else {
               pendingCalls.push({ kind: "other" });
             }
@@ -1038,22 +1070,31 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
           pending.entry.passed = PASSING_VERDICTS.has(verdict);
         } else if (pending.kind === "audit_subagent") {
           const rawText = typeof parsed.content === "string" ? parsed.content : "";
-          pending.entry.tail = extractTail(rawText, AUDIT_TAIL_MAX_CHARS);
-          const convId = extractSubagentConversationId(rawText);
-          if (convId) {
-            pending.entry.conversationId = convId;
-          }
-          if (isPreToolDenialStep(parsed)) {
-            pending.entry.verdict = "ERROR";
-          } else {
-            const directVerdict = parseAuditVerdictFromText(rawText, { status, error });
-            if (directVerdict === "PASS" || directVerdict === "REJECT" || directVerdict === "ERROR") {
-              pending.entry.verdict = directVerdict;
-            } else if (convId && isAsyncSubagentLaunchAck(rawText)) {
-              pending.entry.verdict = "MISSING_VERDICT";
-              asyncAuditsByConversationId.set(convId, pending.entry);
+          const convIds = extractSubagentConversationIds(rawText);
+          const isDenial = isPreToolDenialStep(parsed);
+          const directVerdict = parseAuditVerdictFromText(rawText, { status, error });
+          const isMixedBatch = pending.entries.some((e) => e.totalSlots > 1);
+
+          for (const entry of pending.entries) {
+            entry.tail = extractTail(rawText, AUDIT_TAIL_MAX_CHARS);
+            const matchedId =
+              entry.totalSlots > 1
+                ? (convIds[entry.slotIndex] ?? "")
+                : (convIds[0] ?? "");
+            if (matchedId) {
+              entry.conversationId = matchedId;
+            }
+            if (isDenial) {
+              entry.verdict = "ERROR";
+            } else if (matchedId && isAsyncSubagentLaunchAck(rawText)) {
+              entry.verdict = "MISSING_VERDICT";
+              asyncAuditsByConversationId.set(matchedId, entry);
+            } else if (isMixedBatch && !matchedId) {
+              entry.verdict = directVerdict === "ERROR" ? "ERROR" : "MISSING_VERDICT";
+            } else if (directVerdict === "PASS" || directVerdict === "REJECT" || directVerdict === "ERROR") {
+              entry.verdict = directVerdict;
             } else {
-              pending.entry.verdict = directVerdict;
+              entry.verdict = directVerdict;
             }
           }
         }
@@ -1075,6 +1116,13 @@ function scanTranscriptToLedger(filePath, cwd, gitRoot) {
     return null;
   }
   ledger.pendingAsyncAuditorCount = asyncAuditsByConversationId.size;
+  let pendingAfterLastWrite = 0;
+  for (const entry of asyncAuditsByConversationId.values()) {
+    if (entry.launchedStepIndex > ledger.lastWriteStepIndex) {
+      pendingAfterLastWrite += 1;
+    }
+  }
+  ledger.pendingAsyncAuditsAfterLastWrite = pendingAfterLastWrite;
   return ledger;
 }
 
@@ -1131,10 +1179,50 @@ function countTextFileLinesLightweight(absPath) {
   }
 }
 
-function parseNumstatOutput(output, gitRoot, diffNumstat) {
+function parseNumstatOutput(output, gitRoot, diffNumstat, isNulDelimited = false) {
   if (typeof output !== "string" || output.length === 0) {
     return;
   }
+  const addStat = (rawPath, added, deleted) => {
+    const relPath = normalizeWorkspacePath(rawPath, gitRoot, gitRoot);
+    if (!relPath) {
+      return;
+    }
+    const prev = diffNumstat.get(relPath);
+    if (prev) {
+      prev.added += added;
+      prev.deleted += deleted;
+    } else {
+      diffNumstat.set(relPath, { added, deleted });
+    }
+  };
+
+  if (isNulDelimited) {
+    const tokens = output.split("\0");
+    for (let i = 0; i < tokens.length; i += 1) {
+      const entry = tokens[i];
+      if (entry.length === 0) {
+        continue;
+      }
+      const parts = entry.split("\t");
+      if (parts.length < 3) {
+        continue;
+      }
+      const added = /^\d+$/.test(parts[0]) ? Number(parts[0]) : 0;
+      const deleted = /^\d+$/.test(parts[1]) ? Number(parts[1]) : 0;
+      const pathPart = parts.slice(2).join("\t");
+      if (pathPart.length === 0) {
+        const oldPath = tokens[i + 1] ?? "";
+        const newPath = tokens[i + 2] ?? "";
+        i += 2;
+        addStat(newPath || oldPath, added, deleted);
+      } else {
+        addStat(pathPart, added, deleted);
+      }
+    }
+    return;
+  }
+
   for (const line of output.split(/\r?\n/)) {
     if (line.length === 0) {
       continue;
@@ -1145,18 +1233,7 @@ function parseNumstatOutput(output, gitRoot, diffNumstat) {
     }
     const added = /^\d+$/.test(parts[0]) ? Number(parts[0]) : 0;
     const deleted = /^\d+$/.test(parts[1]) ? Number(parts[1]) : 0;
-    const rawPath = parts.slice(2).join("\t");
-    const relPath = normalizeWorkspacePath(rawPath, gitRoot, gitRoot);
-    if (!relPath) {
-      continue;
-    }
-    const prev = diffNumstat.get(relPath);
-    if (prev) {
-      prev.added += added;
-      prev.deleted += deleted;
-    } else {
-      diffNumstat.set(relPath, { added, deleted });
-    }
+    addStat(parts.slice(2).join("\t"), added, deleted);
   }
 }
 
@@ -1221,17 +1298,17 @@ export function readGitLedger(cwd) {
     const diffNumstat = new Map();
     if (Date.now() < deadline) {
       try {
-        const numstatOut = execFileSync("git", ["-c", "core.quotepath=false", "diff", "--numstat", "HEAD"], {
+        const numstatOut = execFileSync("git", ["-c", "core.quotepath=false", "diff", "--numstat", "-z", "HEAD"], {
           cwd: gitRoot,
           timeout: remainingTimeout(),
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"],
         });
-        parseNumstatOutput(numstatOut, gitRoot, diffNumstat);
+        parseNumstatOutput(numstatOut, gitRoot, diffNumstat, true);
       } catch {
         for (const diffArgs of [
-          ["-c", "core.quotepath=false", "diff", "--numstat", "--cached"],
-          ["-c", "core.quotepath=false", "diff", "--numstat"],
+          ["-c", "core.quotepath=false", "diff", "--numstat", "-z", "--cached"],
+          ["-c", "core.quotepath=false", "diff", "--numstat", "-z"],
         ]) {
           if (Date.now() >= deadline) {
             break;
@@ -1243,7 +1320,7 @@ export function readGitLedger(cwd) {
               encoding: "utf8",
               stdio: ["ignore", "pipe", "ignore"],
             });
-            parseNumstatOutput(out, gitRoot, diffNumstat);
+            parseNumstatOutput(out, gitRoot, diffNumstat, true);
           } catch {
           }
         }

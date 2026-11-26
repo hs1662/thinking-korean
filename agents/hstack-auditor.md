@@ -2,6 +2,7 @@
 name: hstack-auditor
 description: 고위험 변경 사항의 결함, 보안 취약점, 누락된 경계 검증을 읽기 전용으로 독립 검토하고 최종 판정을 반환하는 감사관입니다.
 subagent: true
+mainAgent: false
 inheritCustomizations: true
 ---
 

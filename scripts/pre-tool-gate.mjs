@@ -63,23 +63,30 @@ function appendContextBlock(promptText, lines) {
 
 function buildInjectedPrompt(kind, existingPrompt, { cwd, transcriptPath, turnStartStepIndex }) {
   const safePrompt = typeof existingPrompt === "string" ? existingPrompt : "";
+  const marker = kind === "auditor" ? AUDITOR_SESSION_MARKER : WORKER_SESSION_MARKER;
+  const lines = [];
+  const hasStandaloneMarker = safePrompt.split(/\r?\n/).some((line) => line.trim() === marker);
+  if (!hasStandaloneMarker) {
+    lines.push(marker);
+  }
+  if (cwd && !safePrompt.includes(`작업 경로: \`${cwd}\``)) {
+    lines.push(`작업 경로: \`${cwd}\``);
+  }
   if (kind === "auditor") {
-    if (safePrompt.includes(AUDITOR_SESSION_MARKER)) {
-      return safePrompt;
+    if (transcriptPath && !safePrompt.includes(`세션 기록 경로: \`${transcriptPath}\``)) {
+      lines.push(`세션 기록 경로: \`${transcriptPath}\``);
     }
-    const lines = [AUDITOR_SESSION_MARKER];
-    if (cwd) lines.push(`작업 경로: \`${cwd}\``);
-    if (transcriptPath) lines.push(`세션 기록 경로: \`${transcriptPath}\``);
-    if (typeof turnStartStepIndex === "number" && Number.isFinite(turnStartStepIndex)) {
+    if (
+      typeof turnStartStepIndex === "number" &&
+      Number.isFinite(turnStartStepIndex) &&
+      !safePrompt.includes(`현재 턴 시작 스텝: \`${turnStartStepIndex}\``)
+    ) {
       lines.push(`현재 턴 시작 스텝: \`${turnStartStepIndex}\``);
     }
-    return appendContextBlock(safePrompt, lines);
   }
-  if (safePrompt.includes(WORKER_SESSION_MARKER)) {
+  if (lines.length === 0) {
     return safePrompt;
   }
-  const lines = [WORKER_SESSION_MARKER];
-  if (cwd) lines.push(`작업 경로: \`${cwd}\``);
   return appendContextBlock(safePrompt, lines);
 }
 
@@ -93,6 +100,31 @@ function resolveTurnStartStepIndex(transcriptPath, cwd) {
   } catch {
     return 0;
   }
+}
+
+function rewriteSubagentEntry(entry, { cwd, transcriptPath, getTurnStart }) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return { matched: false, value: entry };
+  }
+  const kind = classifyManagedAgent(entry.TypeName ?? entry.typeName ?? entry.type_name);
+  if (!kind) {
+    return { matched: false, value: entry };
+  }
+  const roleLabel = kind === "auditor" ? AUDITOR_ROLE_LABEL : WORKER_ROLE_LABEL;
+  const promptKey = "Prompt" in entry || !("prompt" in entry) ? "Prompt" : "prompt";
+  const roleKey = "Role" in entry || !("role" in entry) ? "Role" : "role";
+  return {
+    matched: true,
+    value: {
+      ...entry,
+      [roleKey]: roleLabel,
+      [promptKey]: buildInjectedPrompt(kind, entry[promptKey], {
+        cwd,
+        transcriptPath,
+        turnStartStepIndex: kind === "auditor" ? getTurnStart() : null,
+      }),
+    },
+  };
 }
 
 function handleSubagentPreTool(toolCall, { cwd, transcriptPath }) {
@@ -109,60 +141,39 @@ function handleSubagentPreTool(toolCall, { cwd, transcriptPath }) {
     return turnStartCache;
   };
 
-  if (Array.isArray(args.Subagents)) {
+  const arrayKey = Array.isArray(args.Subagents) ? "Subagents" : Array.isArray(args.subagents) ? "subagents" : "";
+  if (arrayKey) {
     let matchedAny = false;
-    const rewritten = args.Subagents.map((entry) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-        return entry;
+    const rewritten = args[arrayKey].map((entry) => {
+      const res = rewriteSubagentEntry(entry, { cwd, transcriptPath, getTurnStart });
+      if (res.matched) {
+        matchedAny = true;
       }
-      const kind = classifyManagedAgent(entry.TypeName ?? entry.typeName ?? entry.type_name);
-      if (!kind) {
-        return entry;
-      }
-      matchedAny = true;
-      const roleLabel = kind === "auditor" ? AUDITOR_ROLE_LABEL : WORKER_ROLE_LABEL;
-      const promptKey = "Prompt" in entry || !("prompt" in entry) ? "Prompt" : "prompt";
-      const roleKey = "Role" in entry || !("role" in entry) ? "Role" : "role";
-      return {
-        ...entry,
-        [roleKey]: roleLabel,
-        [promptKey]: buildInjectedPrompt(kind, entry[promptKey], {
-          cwd,
-          transcriptPath,
-          turnStartStepIndex: kind === "auditor" ? getTurnStart() : null,
-        }),
-      };
+      return res.value;
     });
-
     if (!matchedAny) {
       return { decision: "allow" };
     }
     return {
       decision: "allow",
       overwrite: {
-        Subagents: rewritten,
+        [arrayKey]: rewritten,
       },
     };
   }
 
-  const kind = classifyManagedAgent(args.TypeName ?? args.typeName ?? args.type_name);
-  if (!kind) {
+  const singleRes = rewriteSubagentEntry(args, { cwd, transcriptPath, getTurnStart });
+  if (!singleRes.matched) {
     return { decision: "allow" };
   }
 
-  const roleLabel = kind === "auditor" ? AUDITOR_ROLE_LABEL : WORKER_ROLE_LABEL;
-  const existingPrompt = typeof args.Prompt === "string" ? args.Prompt : typeof args.prompt === "string" ? args.prompt : "";
-  const injectedPrompt = buildInjectedPrompt(kind, existingPrompt, {
-    cwd,
-    transcriptPath,
-    turnStartStepIndex: kind === "auditor" ? getTurnStart() : null,
-  });
-
+  const promptKey = "Prompt" in args || !("prompt" in args) ? "Prompt" : "prompt";
+  const roleKey = "Role" in args || !("role" in args) ? "Role" : "role";
   return {
     decision: "allow",
     overwrite: {
-      Role: roleLabel,
-      Prompt: injectedPrompt,
+      [roleKey]: singleRes.value[roleKey],
+      [promptKey]: singleRes.value[promptKey],
     },
   };
 }

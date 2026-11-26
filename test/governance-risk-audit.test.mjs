@@ -502,9 +502,10 @@ describe("fact-ledger Phase 2 extensions, git numstat, and 5MB performance", () 
         { step_index: 3, type: "GENERIC", status: "DONE", content: "ok" },
         { step_index: 4, type: "PLANNER_RESPONSE", tool_calls: [{ name: "invoke_subagent", args: { TypeName: AUDITOR_AGENT_NAME, Role: AUDITOR_ROLE_LABEL, Prompt: "감사" } }] },
         { step_index: 5, type: "GENERIC", status: "DONE", content: '{"conversationId":"aaaaaaaa-1111-2222-3333-444444444444"}' },
-        { step_index: 6, type: "PLANNER_RESPONSE", tool_calls: [{ name: "edit_file", args: { Path: "auth/token.mjs" } }, { name: "run_command", args: { CommandLine: "node --test" } }] },
+        { step_index: 6, type: "PLANNER_RESPONSE", tool_calls: [{ name: "edit_file", args: { Path: "auth/token.mjs" } }] },
         { step_index: 7, type: "GENERIC", status: "DONE", content: "ok" },
-        { step_index: 8, type: "GENERIC", status: "DONE", content: "ℹ pass 1\nℹ fail 0" },
+        { step_index: 8, type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "node --test" } }] },
+        { step_index: 9, type: "GENERIC", status: "DONE", content: "ℹ pass 1\nℹ fail 0" },
         { step_index: 10, type: "SYSTEM_MESSAGE", content: "[Message] sender=aaaaaaaa-1111-2222-3333-444444444444 content=결함 없음\n[감사 판정: 통과]" },
       ]),
       "utf8",
@@ -646,13 +647,14 @@ describe("fact-ledger Phase 2 extensions, git numstat, and 5MB performance", () 
     runGit(renameRepo, ["config", "user.email", "test@example.com"]);
     runGit(renameRepo, ["config", "user.name", "Test"]);
     mkdirSync(join(renameRepo, "src"), { recursive: true });
-    const baseLines = Array.from({ length: 180 }, (_, i) => `export const v${i} = ${i};`).join("\n") + "\n";
+    const baseLines = Array.from({ length: 400 }, (_, i) => `export const v${i} = ${i};`).join("\n") + "\n";
     writeFileSync(join(renameRepo, "src", "old.mjs"), baseLines, "utf8");
     runGit(renameRepo, ["add", "."]);
     runGit(renameRepo, ["commit", "-m", "init"]);
     runGit(renameRepo, ["mv", "src/old.mjs", "src/new.mjs"]);
     const extraLines = Array.from({ length: 160 }, (_, i) => `export const extra${i} = ${i};`).join("\n") + "\n";
     writeFileSync(join(renameRepo, "src", "new.mjs"), baseLines + extraLines, "utf8");
+    runGit(renameRepo, ["add", "src/new.mjs"]);
     const renameGit = readGitLedger(renameRepo);
     assert.equal(renameGit.diffNumstat.get("src/new.mjs")?.added, 160);
 

@@ -25,15 +25,35 @@ export function resolveAuditEscalationMode(dataDir = resolvePluginDataDir(), con
   return "auto";
 }
 
+const MAX_CUSTOM_SENSITIVE_PATTERNS = 50;
+const NESTED_QUANTIFIER_RE = /\([^()]*[+*?][^()]*\)[+*?{]|\([^()]*\|[^()]*\)[+*?{]/;
+const BACKREFERENCE_RE = /\\[1-9]/;
+
+function isSafeCustomRegex(source) {
+  if (typeof source !== "string") {
+    return false;
+  }
+  const trimmed = source.trim();
+  if (trimmed.length === 0 || trimmed.length > 200) {
+    return false;
+  }
+  if (NESTED_QUANTIFIER_RE.test(trimmed) || BACKREFERENCE_RE.test(trimmed)) {
+    return false;
+  }
+  return true;
+}
+
 function compileSensitivePatterns(rawPatterns) {
   if (!Array.isArray(rawPatterns) || rawPatterns.length === 0) {
     return DEFAULT_SENSITIVE_PATTERNS;
   }
   const compiled = [];
-  for (const item of rawPatterns) {
+  for (const item of rawPatterns.slice(0, MAX_CUSTOM_SENSITIVE_PATTERNS)) {
     if (item instanceof RegExp) {
-      compiled.push(item);
-    } else if (typeof item === "string" && item.trim().length > 0 && item.length <= 200) {
+      if (isSafeCustomRegex(item.source)) {
+        compiled.push(item);
+      }
+    } else if (isSafeCustomRegex(item)) {
       try {
         compiled.push(new RegExp(item.trim(), "i"));
       } catch {
